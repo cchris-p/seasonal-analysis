@@ -451,6 +451,7 @@ def run_seasonal_analysis(
     if df is None:
         # Load data using centralized loader based on asset class
         from load_data import load_price_data
+
         df = load_price_data(symbol, start_date=start, end_date=end, granularity="D")
     df = _ensure_dt_index(df)
     df = df.loc[df.index >= pd.to_datetime(start)]
@@ -599,6 +600,8 @@ def plot_seasonal_stacks_by_lookback(
         title: Plot title
         exclude_incomplete_last_year: If True, exclude the last year if it appears incomplete
     """
+    import matplotlib.pyplot as plt
+
     df = df.copy()
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
