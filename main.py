@@ -28,15 +28,15 @@ from seasonal.seasonal import (
 )
 
 
-def save_csv_reports(out_dir: Path, res: dict) -> None:
-    sc: pd.DataFrame = res["seasonal_curve"]
+def save_csv_reports(out_dir: Path, res) -> None:
+    sc: pd.DataFrame = res.seasonal_curve
     sc.to_csv(out_dir / "seasonal_curve.csv", index=False)
 
-    per_year: pd.DataFrame = res["per_year_results"]
+    per_year: pd.DataFrame = res.per_year_results
     per_year.to_csv(out_dir / "per_year_results.csv", index=True)
 
     # top windows list of dataclasses
-    tw = res["top_windows"]
+    tw = res.top_windows
     if tw:
         df_tw = pd.DataFrame([asdict(w) for w in tw])
         df_tw.to_csv(out_dir / "top_windows.csv", index=False)
@@ -44,9 +44,12 @@ def save_csv_reports(out_dir: Path, res: dict) -> None:
         pd.DataFrame().to_csv(out_dir / "top_windows.csv", index=False)
 
 
-def save_plot_seasonal_curve_with_windows(out_dir: Path, seasonal_curve: pd.DataFrame, windows: List) -> None:
+def save_plot_seasonal_curve_with_windows(
+    out_dir: Path, seasonal_curve: pd.DataFrame, windows: List
+) -> None:
     try:
         import matplotlib
+
         matplotlib.use("Agg")  # headless
         import matplotlib.pyplot as plt
     except Exception as e:
@@ -64,10 +67,12 @@ def save_plot_seasonal_curve_with_windows(out_dir: Path, seasonal_curve: pd.Data
     for w in windows:
         entry = w.entry_mmdd if hasattr(w, "entry_mmdd") else w[0]
         exit_ = w.exit_mmdd if hasattr(w, "exit_mmdd") else w[1]
-        side = w.direction if hasattr(w, "direction") else (w[2] if len(w) > 2 else "auto")
+        side = (
+            w.direction if hasattr(w, "direction") else (w[2] if len(w) > 2 else "auto")
+        )
         x0 = pd.to_datetime("2024-" + entry)
         x1 = pd.to_datetime("2024-" + exit_)
-        color = ("tab:green" if side == "long" else "tab:red")
+        color = "tab:green" if side == "long" else "tab:red"
         if x1 < x0:
             ax.axvspan(pd.to_datetime("2024-01-01"), x1, color=color, alpha=0.2)
             ax.axvspan(x0, pd.to_datetime("2024-12-31"), color=color, alpha=0.2)
@@ -75,21 +80,28 @@ def save_plot_seasonal_curve_with_windows(out_dir: Path, seasonal_curve: pd.Data
             ax.axvspan(x0, x1, color=color, alpha=0.2)
 
     ax.set_xticks(pd.to_datetime([f"2024-{m:02d}-01" for m in range(1, 13)]))
-    ax.set_xticklabels([pd.to_datetime(f"2024-{m:02d}-01").strftime("%b") for m in range(1, 13)])
+    ax.set_xticklabels(
+        [pd.to_datetime(f"2024-{m:02d}-01").strftime("%b") for m in range(1, 13)]
+    )
     plt.tight_layout()
     fig.savefig(out_dir / "seasonal_curve.png", dpi=150)
     plt.close(fig)
 
 
-def save_plot_per_year_pnl(out_dir: Path, per_year: pd.DataFrame, entry_mmdd: str, exit_mmdd: str) -> None:
+def save_plot_per_year_pnl(
+    out_dir: Path, per_year: pd.DataFrame, entry_mmdd: str, exit_mmdd: str
+) -> None:
     try:
         import matplotlib
+
         matplotlib.use("Agg")  # headless
         import matplotlib.pyplot as plt
     except Exception as e:
         print(f"Skipping per-year PnL plot (matplotlib unavailable): {e}")
         return
-    dfw = per_year[(per_year["entry_mmdd"] == entry_mmdd) & (per_year["exit_mmdd"] == exit_mmdd)].copy()
+    dfw = per_year[
+        (per_year["entry_mmdd"] == entry_mmdd) & (per_year["exit_mmdd"] == exit_mmdd)
+    ].copy()
     if dfw.empty:
         return
     dfw = dfw.sort_values("year")
@@ -115,7 +127,12 @@ def main() -> None:
 
     out_dir = results_dir_for(symbol)
 
-    df = load_price_data(symbol, start_date=DEFAULT_START_DATE, end_date=DEFAULT_END_DATE, granularity=DEFAULT_GRANULARITY)
+    df = load_price_data(
+        symbol,
+        start_date=DEFAULT_START_DATE,
+        end_date=DEFAULT_END_DATE,
+        granularity=DEFAULT_GRANULARITY,
+    )
 
     res = run_seasonal_analysis(
         symbol,
@@ -133,11 +150,13 @@ def main() -> None:
 
     save_csv_reports(out_dir, res)
 
-    top = res["top_windows"]
+    top = res.top_windows
     if top:
-        save_plot_seasonal_curve_with_windows(out_dir, res["seasonal_curve"], top[:5])
+        save_plot_seasonal_curve_with_windows(out_dir, res.seasonal_curve, top[:5])
         w0 = top[0]
-        save_plot_per_year_pnl(out_dir, res["per_year_results"], w0.entry_mmdd, w0.exit_mmdd)
+        save_plot_per_year_pnl(
+            out_dir, res.per_year_results, w0.entry_mmdd, w0.exit_mmdd
+        )
 
     print(f"Saved reports to: {out_dir}")
 

@@ -196,6 +196,16 @@ class WindowStats:
     direction: str  # 'long' or 'short'
 
 
+@dataclass
+class SeasonalAnalysisResult:
+    symbol: str
+    years_available: List[int]
+    lookback_years: int
+    seasonal_curve: pd.DataFrame
+    top_windows: List[WindowStats]
+    per_year_results: pd.DataFrame
+
+
 def _compute_window_pnl_for_year(
     df_year: pd.DataFrame,
     entry: pd.Timestamp,
@@ -442,7 +452,7 @@ def run_seasonal_analysis(
     min_win_rate: float = 0.80,
     smooth: int = 3,
     exclude_incomplete_last_year: bool = True,
-) -> Dict:
+) -> SeasonalAnalysisResult:
     """
     Top-level seasonal analysis runner for any asset class.
     If df is None, loads data automatically based on symbol's asset class.
@@ -486,15 +496,267 @@ def run_seasonal_analysis(
         min_win_rate=min_win_rate,
     )
 
-    result = {
-        "symbol": symbol,
-        "years_available": _available_years(df),
-        "lookback_years": lookback_years,
-        "seasonal_curve": seasonal_curve,  # DataFrame ['calendar_day','seasonal_index']
-        "top_windows": top_windows,  # List[WindowStats], sorted best-first
-        "per_year_results": per_year,  # DataFrame with per-year PnL and path stats
+    return SeasonalAnalysisResult(
+        symbol=symbol,
+        years_available=_available_years(df),
+        lookback_years=lookback_years,
+        seasonal_curve=seasonal_curve,
+        top_windows=top_windows,
+        per_year_results=per_year,
+    )
+
+
+# ---------- Seasonax-style derived metrics ----------
+
+
+def _compute_pattern_return_frac(
+    direction: str, entry_px: float, exit_px: float
+) -> float:
+    if entry_px == 0.0:
+        raise ValueError("entry_px must be non-zero")
+    if direction == "long":
+        return (exit_px - entry_px) / entry_px
+    if direction == "short":
+        return (entry_px - exit_px) / entry_px
+    raise ValueError(f"Unsupported direction: {direction!r}")
+
+
+def enrich_per_year_results_with_returns(
+    df: pd.DataFrame,
+    per_year_results: pd.DataFrame,
+    trading_days_per_year: int,
+) -> pd.DataFrame:
+    df_local = _ensure_dt_index(df)
+    if per_year_results.empty:
+        return per_year_results.copy()
+
+    enriched = per_year_results.copy()
+    pattern_trading_days: List[int] = []
+    return_fracs: List[float] = []
+    return_pcts: List[float] = []
+    annualised_fracs: List[float] = []
+    annualised_pcts: List[float] = []
+
+    for row in enriched.itertuples(index=False):
+        entry_dt = getattr(row, "entry_dt")
+        exit_dt = getattr(row, "exit_dt")
+        direction = getattr(row, "direction")
+        entry_px = float(getattr(row, "entry_px"))
+        exit_px = float(getattr(row, "exit_px"))
+
+        mask = (df_local.index >= entry_dt) & (df_local.index <= exit_dt)
+        days_in_pattern = int(mask.sum())
+
+        r_frac = _compute_pattern_return_frac(direction, entry_px, exit_px)
+        if days_in_pattern > 0:
+            ann_frac = (1.0 + r_frac) ** (
+                float(trading_days_per_year) / float(days_in_pattern)
+            ) - 1.0
+        else:
+            ann_frac = np.nan
+
+        pattern_trading_days.append(days_in_pattern)
+        return_fracs.append(r_frac)
+        return_pcts.append(r_frac * 100.0)
+        annualised_fracs.append(ann_frac)
+        annualised_pcts.append(ann_frac * 100.0 if np.isfinite(ann_frac) else np.nan)
+
+    enriched["pattern_trading_days"] = pattern_trading_days
+    enriched["return_frac"] = return_fracs
+    enriched["return_pct"] = return_pcts
+    enriched["annualised_return_frac"] = annualised_fracs
+    enriched["annualised_return_pct"] = annualised_pcts
+    return enriched
+
+
+def build_cumulative_profit_series(
+    per_year_results: pd.DataFrame,
+    entry_mmdd: str,
+    exit_mmdd: str,
+    as_percent: bool,
+) -> pd.Series:
+    dfw = per_year_results[
+        (per_year_results["entry_mmdd"] == entry_mmdd)
+        & (per_year_results["exit_mmdd"] == exit_mmdd)
+    ].copy()
+    if dfw.empty:
+        raise ValueError(f"No trades for window {entry_mmdd} -> {exit_mmdd}")
+    dfw = dfw.sort_values("year")
+
+    values: List[float] = []
+    if as_percent:
+        for row in dfw.itertuples(index=False):
+            r_frac = _compute_pattern_return_frac(
+                getattr(row, "direction"),
+                float(getattr(row, "entry_px")),
+                float(getattr(row, "exit_px")),
+            )
+            values.append(r_frac * 100.0)
+        name = "cumulative_return_pct"
+    else:
+        values = dfw["pnl_points"].astype(float).tolist()
+        name = "cumulative_pnl_points"
+
+    cumulative = np.cumsum(np.asarray(values, dtype=float))
+    return pd.Series(cumulative, index=dfw["year"].astype(int), name=name)
+
+
+def summarize_window_kpis(
+    df: pd.DataFrame,
+    per_year_results: pd.DataFrame,
+    entry_mmdd: str,
+    exit_mmdd: str,
+    trading_days_per_year: int,
+) -> Dict[str, Dict[str, float]]:
+    dfw = per_year_results[
+        (per_year_results["entry_mmdd"] == entry_mmdd)
+        & (per_year_results["exit_mmdd"] == exit_mmdd)
+    ].copy()
+    if dfw.empty:
+        raise ValueError(f"No trades for window {entry_mmdd} -> {exit_mmdd}")
+
+    dfw = enrich_per_year_results_with_returns(df, dfw, trading_days_per_year)
+    num_trades = int(len(dfw))
+    pnl = dfw["pnl_points"].astype(float).to_numpy()
+    r_pct = dfw["return_pct"].astype(float).to_numpy()
+    ann_pct = dfw["annualised_return_pct"].astype(float).to_numpy()
+
+    wins = r_pct > 0.0
+    losses = r_pct < 0.0
+    win_rate = float(wins.sum() / num_trades) if num_trades else np.nan
+
+    def _stats(arr: np.ndarray) -> Tuple[float, float, float, float]:
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return np.nan, np.nan, np.nan, np.nan
+        return (
+            float(arr.mean()),
+            float(np.median(arr)),
+            float(arr.min()),
+            float(arr.max()),
+        )
+
+    avg_pnl, med_pnl, min_pnl, max_pnl = _stats(pnl)
+    avg_ret, med_ret, min_ret, max_ret = _stats(r_pct)
+    avg_ann, med_ann, _, _ = _stats(ann_pct)
+
+    gain_r = r_pct[wins]
+    loss_r = r_pct[losses]
+    avg_gain, med_gain, _, max_gain = _stats(gain_r)
+    avg_loss, med_loss, min_loss, _ = _stats(loss_r)
+
+    cum = pnl.cumsum()
+    total_pnl = float(cum[-1]) if cum.size else 0.0
+    dd = cum - np.maximum.accumulate(cum)
+    max_dd = float(dd.min()) if dd.size else 0.0
+
+    std_ret = float(r_pct.std(ddof=1)) if r_pct.size > 1 else np.nan
+    sharpe_like = (
+        float(np.nanmean(ann_pct) / std_ret)
+        if (np.isfinite(std_ret) and std_ret > 0.0)
+        else np.nan
+    )
+
+    return {
+        "basic": {
+            "num_trades": float(num_trades),
+            "win_rate": win_rate,
+        },
+        "returns_pct": {
+            "avg": avg_ret,
+            "median": med_ret,
+            "min": min_ret,
+            "max": max_ret,
+            "std": std_ret,
+            "avg_annualised": avg_ann,
+            "median_annualised": med_ann,
+        },
+        "profit_points": {
+            "avg": avg_pnl,
+            "median": med_pnl,
+            "min": min_pnl,
+            "max": max_pnl,
+            "total": total_pnl,
+        },
+        "gains": {
+            "num_gains": float(wins.sum()),
+            "avg_gain_pct": avg_gain,
+            "median_gain_pct": med_gain,
+            "best_gain_pct": max_gain,
+        },
+        "losses": {
+            "num_losses": float(losses.sum()),
+            "avg_loss_pct": avg_loss,
+            "median_loss_pct": med_loss,
+            "worst_loss_pct": min_loss,
+        },
+        "cumulative": {
+            "max_drawdown_points": max_dd,
+            "end_cumulative_pnl_points": total_pnl,
+        },
+        "risk": {
+            "sharpe_like": sharpe_like,
+        },
     }
-    return result
+
+
+def compute_pattern_vs_rest_vs_buy_and_hold(
+    df: pd.DataFrame,
+    per_year_results: pd.DataFrame,
+    entry_mmdd: str,
+    exit_mmdd: str,
+) -> Dict[str, float]:
+    df_local = _ensure_dt_index(df)
+    dfw = per_year_results[
+        (per_year_results["entry_mmdd"] == entry_mmdd)
+        & (per_year_results["exit_mmdd"] == exit_mmdd)
+    ].copy()
+    if dfw.empty:
+        raise ValueError(f"No trades for window {entry_mmdd} -> {exit_mmdd}")
+
+    years = sorted(dfw["year"].astype(int).unique().tolist())
+    mask_years = df_local.index.year.isin(years)
+    px = df_local.loc[mask_years, "close"].astype(float)
+    log_ret = np.log(px / px.shift(1))
+    log_ret = log_ret[log_ret.notna()]
+    if log_ret.empty:
+        raise ValueError("Not enough data to compute returns")
+
+    in_pattern = pd.Series(False, index=log_ret.index)
+    for row in dfw.itertuples(index=False):
+        entry_dt = getattr(row, "entry_dt")
+        exit_dt = getattr(row, "exit_dt")
+        seg_idx = log_ret.index[
+            (log_ret.index >= entry_dt) & (log_ret.index <= exit_dt)
+        ]
+        if len(seg_idx):
+            in_pattern.loc[seg_idx] = True
+
+    pattern_log = log_ret[in_pattern]
+    rest_log = log_ret[~in_pattern]
+
+    base_log = float(log_ret.sum())
+    pattern_log_sum = float(pattern_log.sum()) if not pattern_log.empty else 0.0
+    rest_log_sum = float(rest_log.sum()) if not rest_log.empty else 0.0
+
+    base_ret = float(np.exp(base_log) - 1.0)
+    pattern_ret = float(np.exp(pattern_log_sum) - 1.0)
+    rest_ret = float(np.exp(rest_log_sum) - 1.0)
+
+    if base_ret != 0.0:
+        pattern_share = pattern_ret / base_ret
+        rest_share = rest_ret / base_ret
+    else:
+        pattern_share = np.nan
+        rest_share = np.nan
+
+    return {
+        "buyhold_return_frac": base_ret,
+        "pattern_return_frac": pattern_ret,
+        "rest_return_frac": rest_ret,
+        "pattern_share_of_buyhold": pattern_share,
+        "rest_share_of_buyhold": rest_share,
+    }
 
 
 def plot_seasonal_curve_with_windows(
