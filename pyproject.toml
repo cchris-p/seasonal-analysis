@@ -13,10 +13,10 @@ requires-python = ">=3.10"
 keywords = ["seasonality", "trading", "analytics"]
 
 [tool.setuptools]
-# Explicitly include only the seasonal package, excluding study/data/results directories
-packages = ["seasonal"]
+# Explicitly include only the seasonal_analysis package, excluding study/data/results directories
+packages = ["seasonal_analysis"]
 
 [tool.setuptools.package-data]
 # Include py.typed marker for PEP 561 typed package support
-seasonal = ["py.typed"]
+seasonal_analysis = ["py.typed"]
 
