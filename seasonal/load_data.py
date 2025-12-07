@@ -10,8 +10,8 @@ from trading_utils.get_forex_data import get_forex_data_by_pair
 from trading_utils.get_futures_data import get_futures_data_by_ticker
 
 # Minimal asset helpers
-from config_assets import get_config, AssetClass
-from config_assets import is_forex_asset, is_futures_asset
+from seasonal.config_assets import get_config, AssetClass
+from seasonal.config_assets import is_forex_asset, is_futures_asset
 
 
 def apply_data_hygiene(df: pd.DataFrame) -> pd.DataFrame:

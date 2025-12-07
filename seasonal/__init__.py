@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .seasonal import (
+from .analysis import (
     WindowStats,
     SeasonalAnalysisResult,
     compute_year_range_normalized_index,

@@ -98,9 +98,17 @@ In short, this code **discovers statistically consistent seasonal trade windows*
 
 # %%
 
-from data.get_forex_data import get_forex_data_by_pair
+import sys
+from pathlib import Path
 
-eurusd_df = get_forex_data_by_pair(symbol="EURUSD", granularity="D")
+# Ensure project root is on sys.path when running as a script
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from seasonal.load_data import load_price_data
+
+eurusd_df = load_price_data("EURUSD", granularity="D")
 
 # %% [markdown]
 """
@@ -118,9 +126,9 @@ You can keep broad defaults, but these knobs are how you target the calendar, co
 """
 # %%
 
-from seasonal.seasonal import run_spot_seasonal_analysis
+from seasonal.analysis import run_seasonal_analysis
 
-res = run_spot_seasonal_analysis(
+res = run_seasonal_analysis(
     "EURUSD",
     df=eurusd_df,
     lookback_years=15,
@@ -133,10 +141,10 @@ res = run_spot_seasonal_analysis(
 )
 
 
-# %% 
+# %%
 
 print("Best windows:")
-for w in res["top_windows"][:10]:
+for w in res.top_windows[:10]:
     print(w)
 
 
@@ -176,21 +184,21 @@ In short:
 
 # %%
 
-from seasonal.seasonal import (
+from seasonal.analysis import (
     plot_seasonal_curve_with_windows,
     plot_per_year_pnl,
 )
 
 # 1) Shade your top windows over the seasonal curve
 plot_seasonal_curve_with_windows(
-    res["seasonal_curve"],
-    res["top_windows"][:5],
-    title=f"{res['symbol']} seasonal curve + top windows",
+    res.seasonal_curve,
+    res.top_windows[:5],
+    title=f"{res.symbol} seasonal curve + top windows",
 )
 
 # 2) Bar chart for one specific window
-w = res["top_windows"][0]
-plot_per_year_pnl(res["per_year_results"], w.entry_mmdd, w.exit_mmdd)
+w = res.top_windows[0]
+plot_per_year_pnl(res.per_year_results, w.entry_mmdd, w.exit_mmdd)
 
 
 # %% [markdown]
@@ -199,13 +207,12 @@ plot_per_year_pnl(res["per_year_results"], w.entry_mmdd, w.exit_mmdd)
 """
 # %%
 
-from seasonal.seasonal import (
+from seasonal.analysis import (
     plot_seasonal_stacks_by_lookback,
 )
 
 plot_seasonal_stacks_by_lookback(
     eurusd_df,
     lookbacks=(5, 10, 15),
-    title=f"{res['symbol']} seasonal closes (5/10/15y)",
+    title=f"{res.symbol} seasonal closes (5/10/15y)",
 )
-
