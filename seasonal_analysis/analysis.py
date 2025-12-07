@@ -5,10 +5,46 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
 from .config_assets import is_futures_asset
+from .load_data import load_price_data
+
+
+# ---------- Data Classes ----------
+@dataclass
+class WindowStats:
+    entry_mmdd: str
+    exit_mmdd: str
+    num_trades: int
+    win_rate: float
+    avg_profit_points: float
+    median_profit_points: float
+    worst_loss_points: float
+    best_runup_points: float
+    worst_drawdown_points: float
+    direction: str  # 'long' or 'short'
+
+
+@dataclass
+class SeasonalAnalysisResult:
+    symbol: str
+    years_available: List[int]
+    lookback_years: int
+    seasonal_curve: pd.DataFrame
+    top_windows: List[WindowStats]
+    per_year_results: pd.DataFrame
+    df: pd.DataFrame
+    selected_window: Optional[WindowStats] = None  # Top-ranked window for easy access
 
 
 # ---------- Utilities ----------
 def _ensure_dt_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure DataFrame has a sorted DatetimeIndex.
+
+    Args:
+        df: Input DataFrame that may or may not have a DatetimeIndex.
+
+    Returns:
+        DataFrame with DatetimeIndex, sorted chronologically.
+    """
     if not isinstance(df.index, pd.DatetimeIndex):
         df = df.copy()
         df.index = pd.to_datetime(df.index)
@@ -16,6 +52,14 @@ def _ensure_dt_index(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _available_years(df: pd.DataFrame) -> List[int]:
+    """Extract sorted list of unique years present in DataFrame index.
+
+    Args:
+        df: DataFrame with DatetimeIndex.
+
+    Returns:
+        Sorted list of years (as integers) found in the data.
+    """
     return sorted(pd.Index(df.index.year).unique().tolist())
 
 
@@ -51,10 +95,15 @@ def _is_year_complete(
 def _snap_to_trading_day(
     idx: pd.DatetimeIndex, target: pd.Timestamp, policy: str
 ) -> Optional[pd.Timestamp]:
-    """
-    Snap a target date to a trading day present in idx.
-    policy: 'next' or 'prev'
-    Returns None if cannot snap (e.g., out of bounds).
+    """Snap a target date to the nearest available trading day.
+
+    Args:
+        idx: DatetimeIndex containing available trading days.
+        target: Target timestamp to snap.
+        policy: Snapping policy, either 'next' (forward) or 'prev' (backward).
+
+    Returns:
+        Snapped timestamp if found, None if target is out of bounds.
     """
     if target in idx:
         return target
@@ -72,6 +121,20 @@ def _snap_to_trading_day(
 def _calendar_window_days(
     year: int, entry_mmdd: str, exit_mmdd: str
 ) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    """Convert calendar window dates to timestamps for a given year.
+
+    Args:
+        year: Calendar year for the window.
+        entry_mmdd: Entry date in 'MM-DD' format (e.g., '01-15').
+        exit_mmdd: Exit date in 'MM-DD' format (e.g., '02-20').
+
+    Returns:
+        Tuple of (entry_timestamp, exit_timestamp). If exit < entry, exit is
+        moved to the following year to handle year-crossing windows.
+
+    Raises:
+        ValueError: If entry or exit dates are invalid (e.g., Feb 29 in non-leap year).
+    """
     e_month, e_day = map(int, entry_mmdd.split("-"))
     x_month, x_day = map(int, exit_mmdd.split("-"))
 
@@ -104,11 +167,18 @@ def _calendar_window_days(
 def compute_year_range_normalized_index(
     df: pd.DataFrame, price_col: str = "close"
 ) -> pd.Series:
-    """
+    """Compute year-range normalized index for each trading day.
+
     For each calendar year y and each trading day t in y:
         r_t = 100 * (P_t - min_y) / (max_y - min_y)
-    Handles flat-range years by returning 50 for all days in that year.
-    Returns a Series aligned to df.index with values in [0,100].
+
+    Args:
+        df: DataFrame with OHLCV data and datetime index.
+        price_col: Name of the price column to normalize (default: 'close').
+
+    Returns:
+        Series aligned to df.index with normalized values in [0,100]. Years with
+        no price range (flat) return 50 for all days in that year.
     """
     df = _ensure_dt_index(df)
     out = pd.Series(index=df.index, dtype=float)
@@ -182,30 +252,6 @@ def build_seasonal_pattern_curve(
 
 
 # ---------- Window grid and scoring ----------
-@dataclass
-class WindowStats:
-    entry_mmdd: str
-    exit_mmdd: str
-    num_trades: int
-    win_rate: float
-    avg_profit_points: float
-    median_profit_points: float
-    worst_loss_points: float
-    best_runup_points: float
-    worst_drawdown_points: float
-    direction: str  # 'long' or 'short'
-
-
-@dataclass
-class SeasonalAnalysisResult:
-    symbol: str
-    years_available: List[int]
-    lookback_years: int
-    seasonal_curve: pd.DataFrame
-    top_windows: List[WindowStats]
-    per_year_results: pd.DataFrame
-
-
 def _compute_window_pnl_for_year(
     df_year: pd.DataFrame,
     entry: pd.Timestamp,
@@ -213,9 +259,24 @@ def _compute_window_pnl_for_year(
     direction: str,
     pip_factor: float,
 ) -> Optional[Dict]:
-    """
-    Entry/exit on 'Close' at snapped trading dates.
-    Computes realized P&L in pips and settlement-path best/worst equity.
+    """Compute P&L and path metrics for a single year's seasonal window.
+
+    Args:
+        df_year: DataFrame with OHLCV data for the year (plus potential spillover).
+        entry: Target entry timestamp.
+        exit_: Target exit timestamp.
+        direction: Trade direction, either 'long' or 'short'.
+        pip_factor: Multiplier to convert price delta to pips/points.
+
+    Returns:
+        Dictionary containing:
+            - year: Calendar year of entry
+            - entry_dt, exit_dt: Actual snapped trading timestamps
+            - entry_px, exit_px: Entry and exit prices
+            - pnl_points: Realized P&L in pips/points
+            - best_runup_points: Maximum favorable excursion (>= 0)
+            - worst_drawdown_points: Maximum adverse excursion (<= 0)
+        Returns None if window cannot be executed (no valid trading days).
     """
     idx = df_year.index
     e = _snap_to_trading_day(idx, entry, "next")
@@ -252,10 +313,16 @@ def _compute_window_pnl_for_year(
 
 
 def _pip_factor_for_symbol(symbol: str) -> float:
-    """
-    Convert price delta to pips.
-    Defaults: 0.0001-base pairs → factor=10000; JPY quote → 100.
-    Adjust here if your symbols differ (e.g., metals, indices).
+    """Determine pip conversion factor for a trading symbol.
+
+    Args:
+        symbol: Trading symbol (e.g., 'EURUSD', 'USDJPY', 'ES').
+
+    Returns:
+        Conversion factor to multiply price delta:
+            - 1.0 for futures (points)
+            - 100.0 for JPY pairs (0.01 pip)
+            - 10000.0 for standard FX pairs (0.0001 pip)
     """
     sym = symbol.upper()
     # Futures and non-FX assets: work in points
@@ -276,8 +343,19 @@ def generate_calendar_grid(
     min_len_days: int = 5,
     max_len_days: int = 60,
 ) -> List[Tuple[str, str]]:
-    """
-    Produce (entry_mmdd, exit_mmdd) pairs like ('01-12','02-03') bounded by length.
+    """Generate a grid of seasonal window entry/exit date combinations.
+
+    Args:
+        months: List of month numbers to include (1-12).
+        entry_day_range: Tuple of (min_day, max_day) for entry dates.
+        exit_day_range: Tuple of (min_day, max_day) for exit dates.
+        min_len_days: Minimum window length in calendar days (default: 5).
+        max_len_days: Maximum window length in calendar days (default: 60).
+
+    Returns:
+        List of (entry_mmdd, exit_mmdd) tuples in 'MM-DD' format,
+        filtered by window length constraints. Invalid dates (e.g., Feb 29)
+        are automatically excluded.
     """
     entries = []
     for m in months:
@@ -329,10 +407,23 @@ def score_seasonal_windows(
     min_trades: int = 10,
     min_win_rate: float = 0.80,
 ) -> Tuple[List[WindowStats], pd.DataFrame]:
-    """
-    Evaluate each window on the most recent `lookback_years` available.
-    direction: 'long', 'short', or 'auto' (choose based on seasonal slope).
-    Returns (summary_list, per_year_detail_df)
+    """Score seasonal windows across multiple years and filter by performance.
+
+    Args:
+        df: DataFrame with OHLCV data and datetime index.
+        symbol: Trading symbol for pip/point conversion.
+        windows: List of (entry_mmdd, exit_mmdd) tuples to evaluate.
+        lookback_years: Number of recent years to backtest (default: 15).
+        direction: Trade direction - 'long', 'short', or 'auto'. Auto determines
+            direction based on seasonal curve slope (default: 'auto').
+        min_trades: Minimum number of historical trades required (default: 10).
+        min_win_rate: Minimum win rate threshold (0-1) to include (default: 0.80).
+
+    Returns:
+        Tuple of:
+            - List of WindowStats for windows meeting the filters, sorted by
+              composite score (win_rate * avg_profit * num_trades).
+            - DataFrame with detailed per-year results for all evaluated windows.
     """
     df = _ensure_dt_index(df)
     years_all = _available_years(df)
@@ -438,7 +529,6 @@ def score_seasonal_windows(
 # ---------- Orchestration ----------
 def run_seasonal_analysis(
     symbol: str,
-    df: Optional[pd.DataFrame] = None,
     start: str = "2010-01-01",
     end: Optional[str] = None,
     lookback_years: int = 15,
@@ -453,16 +543,40 @@ def run_seasonal_analysis(
     smooth: int = 3,
     exclude_incomplete_last_year: bool = True,
 ) -> SeasonalAnalysisResult:
-    """
-    Top-level seasonal analysis runner for any asset class.
-    If df is None, loads data automatically based on symbol's asset class.
-    Returns dict with seasonal curve, top windows, and per-year table.
-    """
-    if df is None:
-        # Load data using centralized loader based on asset class
-        from load_data import load_price_data
+    """Execute complete seasonal pattern analysis for a trading symbol.
 
-        df = load_price_data(symbol, start_date=start, end_date=end, granularity="D")
+    This is the main entry point that orchestrates seasonal curve generation,
+    window grid creation, and window scoring. Data is automatically loaded based
+    on the symbol's asset class.
+
+    Args:
+        symbol: Trading symbol to analyze (e.g., 'EURUSD', 'ES').
+        start: Start date for analysis in 'YYYY-MM-DD' format (default: '2010-01-01').
+        end: Optional end date in 'YYYY-MM-DD' format. If None, uses latest available.
+        lookback_years: Number of recent years to use for backtesting (default: 15).
+        months: List of months (1-12) to include in window grid. None = all months.
+        entry_day_range: Tuple of (min_day, max_day) for entry dates (default: (5, 25)).
+        exit_day_range: Tuple of (min_day, max_day) for exit dates (default: (10, 31)).
+        min_len_days: Minimum window length in days (default: 5).
+        max_len_days: Maximum window length in days (default: 45).
+        direction: Trade direction - 'long', 'short', or 'auto' (default: 'auto').
+        min_trades: Minimum historical trades to qualify a window (default: 10).
+        min_win_rate: Minimum win rate (0-1) to qualify a window (default: 0.80).
+        smooth: Moving average window for seasonal curve smoothing (default: 3).
+        exclude_incomplete_last_year: If True, exclude incomplete final year (default: True).
+
+    Returns:
+        SeasonalAnalysisResult containing:
+            - symbol: Input symbol
+            - years_available: List of years present in data
+            - lookback_years: Lookback period used
+            - seasonal_curve: DataFrame with daily seasonal index (0-100)
+            - top_windows: List of WindowStats for qualifying windows, ranked by score
+            - per_year_results: DataFrame with detailed per-year trade results
+            - df: Original price data DataFrame
+            - selected_window: Top-ranked window (None if no windows qualify)
+    """
+    df = load_price_data(symbol, start_date=start, end_date=end, granularity="D")
     df = _ensure_dt_index(df)
     df = df.loc[df.index >= pd.to_datetime(start)]
     if months is None:
@@ -503,6 +617,8 @@ def run_seasonal_analysis(
         seasonal_curve=seasonal_curve,
         top_windows=top_windows,
         per_year_results=per_year,
+        df=df,
+        selected_window=top_windows[0] if top_windows else None,
     )
 
 
@@ -512,6 +628,19 @@ def run_seasonal_analysis(
 def _compute_pattern_return_frac(
     direction: str, entry_px: float, exit_px: float
 ) -> float:
+    """Compute fractional return for a pattern trade.
+
+    Args:
+        direction: Trade direction, either 'long' or 'short'.
+        entry_px: Entry price.
+        exit_px: Exit price.
+
+    Returns:
+        Fractional return (e.g., 0.05 = 5% gain). Positive for profitable trades.
+
+    Raises:
+        ValueError: If entry_px is zero or direction is invalid.
+    """
     if entry_px == 0.0:
         raise ValueError("entry_px must be non-zero")
     if direction == "long":
@@ -526,6 +655,25 @@ def enrich_per_year_results_with_returns(
     per_year_results: pd.DataFrame,
     trading_days_per_year: int,
 ) -> pd.DataFrame:
+    """Enrich per-year results with return metrics and annualized returns.
+
+    Adds columns for pattern trading days, returns (fractional and percentage),
+    and annualized returns based on pattern holding period.
+
+    Args:
+        df: DataFrame with OHLCV data and datetime index, used to count trading days.
+        per_year_results: DataFrame from score_seasonal_windows with per-year trades.
+        trading_days_per_year: Number of trading days per year for annualization
+            (typically 252 for equities, 250-260 for FX/futures).
+
+    Returns:
+        Copy of per_year_results with additional columns:
+            - pattern_trading_days: Actual trading days in each pattern window
+            - return_frac: Fractional return (e.g., 0.05 = 5%)
+            - return_pct: Percentage return
+            - annualised_return_frac: Annualized fractional return
+            - annualised_return_pct: Annualized percentage return
+    """
     df_local = _ensure_dt_index(df)
     if per_year_results.empty:
         return per_year_results.copy()
@@ -570,17 +718,33 @@ def enrich_per_year_results_with_returns(
 
 
 def build_cumulative_profit_series(
-    per_year_results: pd.DataFrame,
-    entry_mmdd: str,
-    exit_mmdd: str,
+    result: SeasonalAnalysisResult,
+    window: WindowStats,
     as_percent: bool,
 ) -> pd.Series:
-    dfw = per_year_results[
-        (per_year_results["entry_mmdd"] == entry_mmdd)
-        & (per_year_results["exit_mmdd"] == exit_mmdd)
+    """Build cumulative profit series for a specific seasonal window.
+
+    Args:
+        result: SeasonalAnalysisResult from run_seasonal_analysis.
+        window: WindowStats object containing entry_mmdd and exit_mmdd.
+        as_percent: If True, compute cumulative returns as percentages. If False,
+            compute cumulative P&L in points/pips.
+
+    Returns:
+        Series indexed by year with cumulative values. Name is either
+        'cumulative_return_pct' or 'cumulative_pnl_points'.
+
+    Raises:
+        ValueError: If no trades exist for the specified window.
+    """
+    dfw = result.per_year_results[
+        (result.per_year_results["entry_mmdd"] == window.entry_mmdd)
+        & (result.per_year_results["exit_mmdd"] == window.exit_mmdd)
     ].copy()
     if dfw.empty:
-        raise ValueError(f"No trades for window {entry_mmdd} -> {exit_mmdd}")
+        raise ValueError(
+            f"No trades for window {window.entry_mmdd} -> {window.exit_mmdd}"
+        )
     dfw = dfw.sort_values("year")
 
     values: List[float] = []
@@ -602,20 +766,40 @@ def build_cumulative_profit_series(
 
 
 def summarize_window_kpis(
-    df: pd.DataFrame,
-    per_year_results: pd.DataFrame,
-    entry_mmdd: str,
-    exit_mmdd: str,
+    result: SeasonalAnalysisResult,
+    window: WindowStats,
     trading_days_per_year: int,
 ) -> Dict[str, Dict[str, float]]:
-    dfw = per_year_results[
-        (per_year_results["entry_mmdd"] == entry_mmdd)
-        & (per_year_results["exit_mmdd"] == exit_mmdd)
+    """Compute comprehensive KPI summary for a specific seasonal window.
+
+    Args:
+        result: SeasonalAnalysisResult from run_seasonal_analysis.
+        window: WindowStats object containing entry_mmdd and exit_mmdd.
+        trading_days_per_year: Number of trading days per year for annualization.
+
+    Returns:
+        Nested dictionary with KPI categories:
+            - basic: num_trades, win_rate
+            - returns_pct: avg, median, min, max, std, avg_annualised, median_annualised
+            - profit_points: avg, median, min, max, total
+            - gains: num_gains, avg_gain_pct, median_gain_pct, best_gain_pct
+            - losses: num_losses, avg_loss_pct, median_loss_pct, worst_loss_pct
+            - cumulative: max_drawdown_points, end_cumulative_pnl_points
+            - risk: sharpe_like (annualized return / std return)
+
+    Raises:
+        ValueError: If no trades exist for the specified window.
+    """
+    dfw = result.per_year_results[
+        (result.per_year_results["entry_mmdd"] == window.entry_mmdd)
+        & (result.per_year_results["exit_mmdd"] == window.exit_mmdd)
     ].copy()
     if dfw.empty:
-        raise ValueError(f"No trades for window {entry_mmdd} -> {exit_mmdd}")
+        raise ValueError(
+            f"No trades for window {window.entry_mmdd} -> {window.exit_mmdd}"
+        )
 
-    dfw = enrich_per_year_results_with_returns(df, dfw, trading_days_per_year)
+    dfw = enrich_per_year_results_with_returns(result.df, dfw, trading_days_per_year)
     num_trades = int(len(dfw))
     pnl = dfw["pnl_points"].astype(float).to_numpy()
     r_pct = dfw["return_pct"].astype(float).to_numpy()
@@ -701,18 +885,38 @@ def summarize_window_kpis(
 
 
 def compute_pattern_vs_rest_vs_buy_and_hold(
-    df: pd.DataFrame,
-    per_year_results: pd.DataFrame,
-    entry_mmdd: str,
-    exit_mmdd: str,
+    result: SeasonalAnalysisResult,
+    window: WindowStats,
 ) -> Dict[str, float]:
-    df_local = _ensure_dt_index(df)
-    dfw = per_year_results[
-        (per_year_results["entry_mmdd"] == entry_mmdd)
-        & (per_year_results["exit_mmdd"] == exit_mmdd)
+    """Decompose buy-and-hold returns into pattern vs. rest-of-year performance.
+
+    Computes log returns for pattern windows vs. non-pattern periods to determine
+    how much of the total buy-and-hold return is attributable to the seasonal pattern.
+
+    Args:
+        result: SeasonalAnalysisResult from run_seasonal_analysis.
+        window: WindowStats object containing entry_mmdd and exit_mmdd.
+
+    Returns:
+        Dictionary containing:
+            - buyhold_return_frac: Total buy-and-hold fractional return
+            - pattern_return_frac: Fractional return during pattern windows only
+            - rest_return_frac: Fractional return during non-pattern periods
+            - pattern_share_of_buyhold: Pattern return / buy-and-hold return
+            - rest_share_of_buyhold: Rest return / buy-and-hold return
+
+    Raises:
+        ValueError: If no trades exist for the specified window or insufficient data.
+    """
+    df_local = _ensure_dt_index(result.df)
+    dfw = result.per_year_results[
+        (result.per_year_results["entry_mmdd"] == window.entry_mmdd)
+        & (result.per_year_results["exit_mmdd"] == window.exit_mmdd)
     ].copy()
     if dfw.empty:
-        raise ValueError(f"No trades for window {entry_mmdd} -> {exit_mmdd}")
+        raise ValueError(
+            f"No trades for window {window.entry_mmdd} -> {window.exit_mmdd}"
+        )
 
     years = sorted(dfw["year"].astype(int).unique().tolist())
     mask_years = df_local.index.year.isin(years)
