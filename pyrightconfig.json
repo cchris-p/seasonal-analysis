@@ -1,25 +1,29 @@
 {
     "include": [
-        "config_assets.py",
-        "constants.py",
-        "load_data.py",
-        "main.py",
-        "seasonal"
+        "seasonal_analysis"
     ],
     "exclude": [
         "**/__pycache__",
         "**/.venv",
         "**/.git",
+        "**/node_modules",
         "build",
-        "dist"
+        "dist",
+        "*.egg-info",
+        "study",
+        "docs",
+        "results"
     ],
     "executionEnvironments": [
         {
             "root": ".",
+            "pythonVersion": "3.10",
             "extraPaths": [
                 "."
             ]
         }
     ],
-    "typeCheckingMode": "standard"
+    "typeCheckingMode": "standard",
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false
 }
