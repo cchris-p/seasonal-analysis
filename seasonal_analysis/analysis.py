@@ -32,7 +32,7 @@ class SeasonalAnalysisResult:
     top_windows: List[WindowStats]
     per_year_results: pd.DataFrame
     df: pd.DataFrame
-    selected_window: Optional[WindowStats] = None  # Top-ranked window for easy access
+    selected_window: WindowStats  # window originally used for analysis
 
 
 # ---------- Utilities ----------
@@ -719,14 +719,12 @@ def enrich_per_year_results_with_returns(
 
 def build_cumulative_profit_series(
     result: SeasonalAnalysisResult,
-    window: WindowStats,
     as_percent: bool,
 ) -> pd.Series:
     """Build cumulative profit series for a specific seasonal window.
 
     Args:
         result: SeasonalAnalysisResult from run_seasonal_analysis.
-        window: WindowStats object containing entry_mmdd and exit_mmdd.
         as_percent: If True, compute cumulative returns as percentages. If False,
             compute cumulative P&L in points/pips.
 
@@ -737,6 +735,7 @@ def build_cumulative_profit_series(
     Raises:
         ValueError: If no trades exist for the specified window.
     """
+    window = result.selected_window
     dfw = result.per_year_results[
         (result.per_year_results["entry_mmdd"] == window.entry_mmdd)
         & (result.per_year_results["exit_mmdd"] == window.exit_mmdd)
@@ -767,14 +766,12 @@ def build_cumulative_profit_series(
 
 def summarize_window_kpis(
     result: SeasonalAnalysisResult,
-    window: WindowStats,
-    trading_days_per_year: int,
+    trading_days_per_year: int = 252,
 ) -> Dict[str, Dict[str, float]]:
     """Compute comprehensive KPI summary for a specific seasonal window.
 
     Args:
         result: SeasonalAnalysisResult from run_seasonal_analysis.
-        window: WindowStats object containing entry_mmdd and exit_mmdd.
         trading_days_per_year: Number of trading days per year for annualization.
 
     Returns:
@@ -790,6 +787,7 @@ def summarize_window_kpis(
     Raises:
         ValueError: If no trades exist for the specified window.
     """
+    window = result.selected_window
     dfw = result.per_year_results[
         (result.per_year_results["entry_mmdd"] == window.entry_mmdd)
         & (result.per_year_results["exit_mmdd"] == window.exit_mmdd)
@@ -886,7 +884,6 @@ def summarize_window_kpis(
 
 def compute_pattern_vs_rest_vs_buy_and_hold(
     result: SeasonalAnalysisResult,
-    window: WindowStats,
 ) -> Dict[str, float]:
     """Decompose buy-and-hold returns into pattern vs. rest-of-year performance.
 
@@ -895,7 +892,6 @@ def compute_pattern_vs_rest_vs_buy_and_hold(
 
     Args:
         result: SeasonalAnalysisResult from run_seasonal_analysis.
-        window: WindowStats object containing entry_mmdd and exit_mmdd.
 
     Returns:
         Dictionary containing:
@@ -908,6 +904,7 @@ def compute_pattern_vs_rest_vs_buy_and_hold(
     Raises:
         ValueError: If no trades exist for the specified window or insufficient data.
     """
+    window = result.selected_window
     df_local = _ensure_dt_index(result.df)
     dfw = result.per_year_results[
         (result.per_year_results["entry_mmdd"] == window.entry_mmdd)

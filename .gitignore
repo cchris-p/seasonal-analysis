@@ -1,3 +1,17 @@
+# Python cache and bytecode
 __pycache__
-results/
+*.pyc
+*.pyo
+
+# Build artifacts
+build/
+dist/
 *.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Project-specific
+results/
