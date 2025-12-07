@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seasonal-analysis"
+version = "0.1.0"
+description = "Seasonal pattern analysis utilities for trading"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# We rely on inline type hints and py.typed in the `seasonal` package.
+keywords = ["seasonality", "trading", "analytics"]
+
+[tool.setuptools]
+# Explicitly include only the seasonal package, excluding study/data/results directories
+packages = ["seasonal"]
+
+[tool.setuptools.package-data]
+# Include py.typed marker for PEP 561 typed package support
+seasonal = ["py.typed"]
+

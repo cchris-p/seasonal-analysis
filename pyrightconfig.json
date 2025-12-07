@@ -1,0 +1,25 @@
+{
+    "include": [
+        "config_assets.py",
+        "constants.py",
+        "load_data.py",
+        "main.py",
+        "seasonal"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        "**/.venv",
+        "**/.git",
+        "build",
+        "dist"
+    ],
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "extraPaths": [
+                "."
+            ]
+        }
+    ],
+    "typeCheckingMode": "standard"
+}

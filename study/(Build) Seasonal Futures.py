@@ -85,29 +85,29 @@ res = run_seasonal_analysis(
 )
 
 # %%
-print(f"Symbol: {res['symbol']}")
-print(f"Years available: {res['years_available']}")
+print(f"Symbol: {res.symbol}")
+print(f"Years available: {res.years_available}")
 print("Best windows:")
-for w in res["top_windows"][:10]:
+for w in res.top_windows[:10]:
     print(w)
 
 # %%
 # 1) Shade top windows over the seasonal curve
-if res["top_windows"]:
+if res.top_windows:
     plot_seasonal_curve_with_windows(
-        res["seasonal_curve"],
-        res["top_windows"][:5],
-        title=f"{res['symbol']} seasonal curve + top windows",
+        res.seasonal_curve,
+        res.top_windows[:5],
+        title=f"{res.symbol} seasonal curve + top windows",
     )
 
     # 2) Bar chart for one specific window
-    w0 = res["top_windows"][0]
-    plot_per_year_pnl(res["per_year_results"], w0.entry_mmdd, w0.exit_mmdd)
+    w0 = res.top_windows[0]
+    plot_per_year_pnl(res.per_year_results, w0.entry_mmdd, w0.exit_mmdd)
 
 # %%
 # 3) Plot seasonal stacks for multiple lookbacks on the same futures contract
 plot_seasonal_stacks_by_lookback(
     fut_df,
     lookbacks=(5, 10, LOOKBACK_YEARS),
-    title=f"{res['symbol']} seasonal closes (5/10/{LOOKBACK_YEARS}y)",
+    title=f"{res.symbol} seasonal closes (5/10/{LOOKBACK_YEARS}y)",
 )

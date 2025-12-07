@@ -192,10 +192,10 @@ res = run_seasonal_analysis(
 )
 
 # %%
-print(f"Symbol: {res['symbol']}")
-print(f"Years available: {res['years_available']}")
+print(f"Symbol: {res.symbol}")
+print(f"Years available: {res.years_available}")
 print("Best windows:")
-for w in res["top_windows"][:10]:
+for w in res.top_windows[:10]:
     print(w)
 
 # %% [markdown]
@@ -234,14 +234,14 @@ for w in res["top_windows"][:10]:
 # %%
 # 1) Shade your top windows over the seasonal curve
 plot_seasonal_curve_with_windows(
-    res["seasonal_curve"],
-    res["top_windows"][:5],
-    title=f"{res['symbol']} seasonal curve + top windows",
+    res.seasonal_curve,
+    res.top_windows[:5],
+    title=f"{res.symbol} seasonal curve + top windows",
 )
 
 # 2) Bar chart for one specific window
-w = res["top_windows"][0]
-plot_per_year_pnl(res["per_year_results"], w.entry_mmdd, w.exit_mmdd)
+w = res.top_windows[0]
+plot_per_year_pnl(res.per_year_results, w.entry_mmdd, w.exit_mmdd)
 
 # %% [markdown]
 # # Seasonal Forex - Plotting the Seasonal Closes of the 5-Year, 10-Year, and 15-Year Periods
@@ -250,7 +250,7 @@ plot_per_year_pnl(res["per_year_results"], w.entry_mmdd, w.exit_mmdd)
 plot_seasonal_stacks_by_lookback(
     eurusd_df,
     lookbacks=(5, 10, LOOKBACK_YEARS),
-    title=f"{res['symbol']} seasonal closes (5/10/{LOOKBACK_YEARS}y)",
+    title=f"{res.symbol} seasonal closes (5/10/{LOOKBACK_YEARS}y)",
 )
 
 # %% [markdown]
@@ -295,8 +295,8 @@ plot_seasonal_stacks_by_lookback(
 def build_example_filtered_signals(my_system_signals):
     flt = build_seasonal_filter(
         eurusd_df,
-        res["seasonal_curve"],
-        res["top_windows"],
+        res.seasonal_curve,
+        res.top_windows,
         win_rate_thr=0.80,
         slope_k=5,
         slope_mag_thr=1.0,
