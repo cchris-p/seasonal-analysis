@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pandas as pd
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
 from .config_assets import is_futures_asset
@@ -21,6 +21,7 @@ class WindowStats:
     best_runup_points: float
     worst_drawdown_points: float
     direction: str  # 'long' or 'short'
+    trades: Optional[pd.DataFrame] = field(default=None)
 
 
 @dataclass
@@ -482,20 +483,60 @@ def score_seasonal_windows(
         if not yearly:
             continue
 
+        # per-trade DataFrame for this window
+        trades_df = pd.DataFrame(yearly).sort_values("year")
+
         # aggregate
-        pnl = np.array([r["pnl_points"] for r in yearly], dtype=float)
+        pnl = trades_df["pnl_points"].astype(float).to_numpy()
         wins = (pnl > 0).sum()
-        num = len(yearly)
+        num = len(trades_df)
         win_rate = wins / num if num else 0.0
         avg_points = float(pnl.mean()) if num else 0.0
         med_points = float(np.median(pnl)) if num else 0.0
         worst_loss = float(pnl.min()) if num else 0.0
         best_runup = (
-            float(np.max([r["best_runup_points"] for r in yearly])) if num else 0.0
+            float(trades_df["best_runup_points"].astype(float).max()) if num else 0.0
         )
         worst_dd = (
-            float(np.min([r["worst_drawdown_points"] for r in yearly])) if num else 0.0
+            float(trades_df["worst_drawdown_points"].astype(float).min())
+            if num
+            else 0.0
         )
+
+        # enrich trades with percentage-based metrics
+        if num:
+            # profit percentage per trade
+            profit_pcts: List[float] = []
+            max_rise_pcts: List[float] = []
+            max_drop_pcts: List[float] = []
+
+            for row in trades_df.itertuples(index=False):
+                direction_row = getattr(row, "direction")
+                entry_px_row = float(getattr(row, "entry_px"))
+                exit_px_row = float(getattr(row, "exit_px"))
+                best_runup_row = float(getattr(row, "best_runup_points"))
+                worst_dd_row = float(getattr(row, "worst_drawdown_points"))
+
+                r_frac = _compute_pattern_return_frac(
+                    direction_row, entry_px_row, exit_px_row
+                )
+                profit_pcts.append(r_frac * 100.0)
+
+                # Convert path excursions in points back to percentage of entry price
+                denom = (
+                    entry_px_row * float(pip_factor) if entry_px_row != 0.0 else np.nan
+                )
+                if np.isfinite(denom) and denom != 0.0:
+                    max_rise_pcts.append(best_runup_row / denom * 100.0)
+                    max_drop_pcts.append(worst_dd_row / denom * 100.0)
+                else:
+                    max_rise_pcts.append(np.nan)
+                    max_drop_pcts.append(np.nan)
+
+            trades_df = trades_df.copy()
+            trades_df["profit_pct"] = profit_pcts
+            trades_df["max_rise_pct"] = max_rise_pcts
+            trades_df["max_drop_pct"] = max_drop_pcts
 
         # reliability filter
         if (num >= min_trades) and (win_rate >= min_win_rate) and (avg_points > 0):
@@ -511,6 +552,7 @@ def score_seasonal_windows(
                     best_runup_points=best_runup,
                     worst_drawdown_points=worst_dd,
                     direction=side,
+                    trades=trades_df,
                 )
             )
 
@@ -617,7 +659,6 @@ def run_seasonal_analysis(
         top_windows=top_windows,
         per_year_results=per_year,
         df=df,
-        selected_window=top_windows[0] if top_windows else None,
     )
 
 
@@ -789,16 +830,28 @@ def summarize_window_kpis(
     Raises:
         ValueError: If no trades exist for the specified window.
     """
-    window = result.selected_window
-    dfw = result.per_year_results[
-        (result.per_year_results["entry_mmdd"] == window.entry_mmdd)
-        & (result.per_year_results["exit_mmdd"] == window.exit_mmdd)
-    ].copy()
-    if dfw.empty:
+    # Ensure the window exists within the analysis result
+    matching_windows = [
+        w
+        for w in result.top_windows
+        if (
+            w.entry_mmdd == window.entry_mmdd
+            and w.exit_mmdd == window.exit_mmdd
+            and w.direction == window.direction
+        )
+    ]
+    if not matching_windows:
         raise ValueError(
-            f"No trades for window {window.entry_mmdd} -> {window.exit_mmdd}"
+            f"Window {window.entry_mmdd} -> {window.exit_mmdd} ({window.direction}) is not present in the analysis result."
         )
 
+    w_ref = matching_windows[0]
+    if w_ref.trades is None or w_ref.trades.empty:
+        raise ValueError(
+            f"No trades stored for window {window.entry_mmdd} -> {window.exit_mmdd}"
+        )
+
+    dfw = w_ref.trades.copy()
     dfw = enrich_per_year_results_with_returns(result.df, dfw, trading_days_per_year)
     num_trades = int(len(dfw))
     pnl = dfw["pnl_points"].astype(float).to_numpy()
@@ -820,6 +873,24 @@ def summarize_window_kpis(
             float(arr.max()),
         )
 
+    def _compute_streaks(signs: np.ndarray, target: int) -> Tuple[int, int]:
+        current = 0
+        max_seen = 0
+        for s in signs:
+            if s == target:
+                current += 1
+                if current > max_seen:
+                    max_seen = current
+            else:
+                current = 0
+        current_tail = 0
+        for s in signs[::-1]:
+            if s == target:
+                current_tail += 1
+            else:
+                break
+        return int(current_tail), int(max_seen)
+
     avg_pnl, med_pnl, min_pnl, max_pnl = _stats(pnl)
     avg_ret, med_ret, min_ret, max_ret = _stats(r_pct)
     avg_ann, med_ann, _, _ = _stats(ann_pct)
@@ -829,10 +900,22 @@ def summarize_window_kpis(
     avg_gain, med_gain, _, max_gain = _stats(gain_r)
     avg_loss, med_loss, min_loss, _ = _stats(loss_r)
 
+    signs = np.sign(r_pct)
+    current_gain_streak, max_gain_streak = _compute_streaks(signs, 1)
+    current_loss_streak, max_loss_streak = _compute_streaks(signs, -1)
+
     cum = pnl.cumsum()
     total_pnl = float(cum[-1]) if cum.size else 0.0
     dd = cum - np.maximum.accumulate(cum)
     max_dd = float(dd.min()) if dd.size else 0.0
+
+    years_index = dfw["year"].astype(int).to_numpy()
+    cumulative_pnl_series = pd.Series(
+        cum, index=years_index, name="cumulative_pnl_points"
+    )
+    cumulative_return_series = pd.Series(
+        r_pct.cumsum(), index=years_index, name="cumulative_return_pct"
+    )
 
     std_ret = float(r_pct.std(ddof=1)) if r_pct.size > 1 else np.nan
     sharpe_like = (
@@ -840,6 +923,8 @@ def summarize_window_kpis(
         if (np.isfinite(std_ret) and std_ret > 0.0)
         else np.nan
     )
+
+    pattern_vs_rest = compute_pattern_vs_rest_vs_buy_and_hold(result, w_ref)
 
     return {
         "basic": {
@@ -877,10 +962,19 @@ def summarize_window_kpis(
         "cumulative": {
             "max_drawdown_points": max_dd,
             "end_cumulative_pnl_points": total_pnl,
+            "series_pnl_points": cumulative_pnl_series,
+            "series_return_pct": cumulative_return_series,
         },
         "risk": {
             "sharpe_like": sharpe_like,
         },
+        "streaks": {
+            "current_gain_streak": float(current_gain_streak),
+            "max_gain_streak": float(max_gain_streak),
+            "current_loss_streak": float(current_loss_streak),
+            "max_loss_streak": float(max_loss_streak),
+        },
+        "pattern_vs_rest": pattern_vs_rest,
     }
 
 
