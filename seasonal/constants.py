@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Tuple, List
 
-from config_assets import get_config
+from .config_assets import get_config
 
 # ---------------------------------------------------------------------------
 # Core selector (you can change just this for quick runs)

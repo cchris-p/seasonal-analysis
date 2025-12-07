@@ -1,22 +1,13 @@
 from __future__ import annotations
-import sys
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
-TRADING_UTILS_PATH = "/home/matrillo/apps/jupyter-notebooks/"
-if TRADING_UTILS_PATH and TRADING_UTILS_PATH not in sys.path:
-    sys.path.insert(0, TRADING_UTILS_PATH)
-
-try:
-    from trading_utils.constants import (  # type: ignore
-        forex_majors_minors as FOREX_ASSETS,
-        firstratedata_futures_tickers as FUTURES_ASSETS,
-    )
-except Exception:
-    FOREX_ASSETS = ("EURUSD", "GBPUSD", "USDJPY")
-    FUTURES_ASSETS = ("ES", "NQ", "CL", "GC")
+from trading_utils.constants import (
+    forex_majors_minors as FOREX_ASSETS,
+    firstratedata_futures_tickers as FUTURES_ASSETS,
+)
 
 
 class AssetClass(Enum):

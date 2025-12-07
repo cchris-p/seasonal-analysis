@@ -4,7 +4,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
-from config_assets import is_futures_asset
+from .config_assets import is_futures_asset
 
 
 # ---------- Utilities ----------

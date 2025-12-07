@@ -6,7 +6,7 @@ from typing import List
 import shutil
 import pandas as pd
 
-from constants import (
+from seasonal.constants import (
     DEFAULT_SYMBOL,
     DEFAULT_GRANULARITY,
     DEFAULT_START_DATE,
@@ -23,7 +23,7 @@ from constants import (
     results_dir_for,
 )
 from load_data import load_price_data
-from seasonal.seasonal import (
+from seasonal.analysis import (
     run_seasonal_analysis,
 )
 
