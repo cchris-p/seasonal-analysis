@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from seasonal.constants import (
+from seasonal_analysis.constants import (
     DEFAULT_SYMBOL,
     DEFAULT_GRANULARITY,
     DEFAULT_START_DATE,
@@ -28,8 +28,8 @@ from seasonal.constants import (
     EXCLUDE_INCOMPLETE_LAST_YEAR,
     results_dir_for,
 )
-from seasonal.load_data import load_price_data
-from seasonal.analysis import (
+from seasonal_analysis.load_data import load_price_data
+from seasonal_analysis.analysis import (
     run_seasonal_analysis,
 )
 

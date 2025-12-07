@@ -106,7 +106,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from seasonal.load_data import load_price_data
+from seasonal_analysis.load_data import load_price_data
 
 eurusd_df = load_price_data("EURUSD", granularity="D")
 
@@ -126,7 +126,7 @@ You can keep broad defaults, but these knobs are how you target the calendar, co
 """
 # %%
 
-from seasonal.analysis import run_seasonal_analysis
+from seasonal_analysis.analysis import run_seasonal_analysis
 
 res = run_seasonal_analysis(
     "EURUSD",
@@ -184,7 +184,7 @@ In short:
 
 # %%
 
-from seasonal.analysis import (
+from seasonal_analysis.plotting import (
     plot_seasonal_curve_with_windows,
     plot_per_year_pnl,
 )
@@ -207,7 +207,7 @@ plot_per_year_pnl(res.per_year_results, w.entry_mmdd, w.exit_mmdd)
 """
 # %%
 
-from seasonal.analysis import (
+from seasonal_analysis.plotting import (
     plot_seasonal_stacks_by_lookback,
 )
 

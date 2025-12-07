@@ -12,6 +12,8 @@ from .analysis import (
     build_cumulative_profit_series,
     summarize_window_kpis,
     compute_pattern_vs_rest_vs_buy_and_hold,
+)
+from .plotting import (
     plot_seasonal_curve_with_windows,
     plot_per_year_pnl,
     plot_seasonal_stacks_by_lookback,
