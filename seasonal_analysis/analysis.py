@@ -33,6 +33,9 @@ class SeasonalAnalysisResult:
     top_windows: List[WindowStats]
     per_year_results: pd.DataFrame
     df: pd.DataFrame
+    analysis_start_date: str
+    analysis_end_date: str
+    num_years: int
 
 
 # ---------- Utilities ----------
@@ -620,6 +623,10 @@ def run_seasonal_analysis(
     df = load_price_data(symbol, start_date=start, end_date=end, granularity="D")
     df = _ensure_dt_index(df)
     df = df.loc[df.index >= pd.to_datetime(start)]
+    years_available = _available_years(df)
+    analysis_start_date = df.index.min().strftime("%Y-%m-%d")
+    analysis_end_date = df.index.max().strftime("%Y-%m-%d")
+    num_years = min(len(years_available), lookback_years)
     if months is None:
         months = list(range(1, 13))  # full year grid
 
@@ -653,12 +660,15 @@ def run_seasonal_analysis(
 
     return SeasonalAnalysisResult(
         symbol=symbol,
-        years_available=_available_years(df),
+        years_available=years_available,
         lookback_years=lookback_years,
         seasonal_curve=seasonal_curve,
         top_windows=top_windows,
         per_year_results=per_year,
         df=df,
+        analysis_start_date=analysis_start_date,
+        analysis_end_date=analysis_end_date,
+        num_years=num_years,
     )
 
 
