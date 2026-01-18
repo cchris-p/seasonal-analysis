@@ -62,8 +62,6 @@ def load_price_data(
             start_date=start_date,
             end_date=end_date,
             granularity=granularity,
-            print_candles_retrieved=False,
-            use_cache=False,
         )
     else:
         raise ValueError(
@@ -174,8 +172,6 @@ def load_symbol_data(
             start_date=f"{start_year}-01-01",
             end_date=f"{end_year+1}-01-01",
             granularity="M5",
-            print_candles_retrieved=False,
-            use_cache=True,
         )
         if isinstance(df, dict):
             # Defensive: some loaders may return dict
