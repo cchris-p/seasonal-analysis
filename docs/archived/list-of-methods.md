@@ -1,0 +1,12 @@
+- Seasonal Closes by Year
+- Average Monthly Cash Wheat Prices ( Average and Median )
+- Plot Seasonality Classic
+- Seasonal Volatility
+- Profitable Years
+- Detrending Using the Moving Average and First Differences methods
+- Yearly Averages
+- X11 Seasonal Adjustments
+- X12 Seasonal Adjustments
+- STL Decomposition
+- Winter’s Methods
+- Aside: Volatility for Multiple Assets
