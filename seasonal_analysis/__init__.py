@@ -19,6 +19,7 @@ from .plotting import (
     plot_seasonal_stacks_by_lookback,
 )
 from .seasonal_filters import build_seasonal_filter
+from .poi_charts import compute_poi_charts_payload
 
 __all__ = [
     "WindowStats",
@@ -36,4 +37,5 @@ __all__ = [
     "plot_per_year_pnl",
     "plot_seasonal_stacks_by_lookback",
     "build_seasonal_filter",
+    "compute_poi_charts_payload",
 ]
