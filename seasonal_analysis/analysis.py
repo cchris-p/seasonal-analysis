@@ -195,6 +195,25 @@ def compute_year_range_normalized_index(
     return out
 
 
+def _compute_log_returns_per_year(df: pd.DataFrame, price_col: str) -> pd.Series:
+    df = _ensure_dt_index(df)
+    prices = df[price_col].astype(float)
+    return prices.groupby(prices.index.year, group_keys=False).apply(
+        lambda s: np.log(s / s.shift(1))
+    )
+
+
+def _calendar_mmdd_range(entry_mmdd: str, exit_mmdd: str) -> List[str]:
+    e_month, e_day = map(int, entry_mmdd.split("-"))
+    x_month, x_day = map(int, exit_mmdd.split("-"))
+    entry = pd.Timestamp(year=2024, month=e_month, day=e_day)
+    exit_ = pd.Timestamp(year=2024, month=x_month, day=x_day)
+    if exit_ < entry:
+        exit_ = pd.Timestamp(year=2025, month=x_month, day=x_day)
+    days = pd.date_range(entry, exit_, freq="D")
+    return [d.strftime("%m-%d") for d in days]
+
+
 def build_seasonal_pattern_curve(
     df: pd.DataFrame,
     lookback_years: int = 15,
@@ -230,23 +249,30 @@ def build_seasonal_pattern_curve(
 
     keep_years = years[-lookback_years:] if len(years) > lookback_years else years
 
-    # Compute normalized index for whole dataset
-    norm = compute_year_range_normalized_index(df, price_col=price_col)
-
-    # Assemble by MM-DD
+    log_returns = _compute_log_returns_per_year(df, price_col=price_col)
     tmp = pd.DataFrame(
         {
-            "idx": df.index,
             "mmdd": df.index.strftime("%m-%d"),
             "year": df.index.year,
-            "norm": norm.values,
+            "log_return": log_returns.values,
         }
     )
     tmp = tmp[tmp["year"].isin(keep_years)]
-    grp = tmp.groupby("mmdd")["norm"].mean().to_frame("seasonal_index").reset_index()
+    grp = (
+        tmp.groupby("mmdd")["log_return"]
+        .mean()
+        .fillna(0.0)
+        .to_frame("mean_log_return")
+        .reset_index()
+    )
     grp = grp.sort_values("mmdd").reset_index(drop=True)
 
-    # Optional simple moving average smoothing
+    curve = np.exp(np.cumsum(grp["mean_log_return"].astype(float).to_numpy()))
+    base = float(curve[0]) if len(curve) else 1.0
+    if not np.isfinite(base) or base == 0.0:
+        base = 1.0
+    grp["seasonal_index"] = (curve / base) * 100.0
+
     if smooth and smooth > 1:
         si = grp["seasonal_index"].rolling(smooth, min_periods=1, center=True).mean()
         grp["seasonal_index"] = si
@@ -436,9 +462,16 @@ def score_seasonal_windows(
     df_used = df[df.index.year.isin(years_used)].copy()
     pip_factor = _pip_factor_for_symbol(symbol)
 
-    # Seasonal slope proxy to guide 'auto'
-    curve = build_seasonal_pattern_curve(df_used, lookback_years=len(years_used))
+    curve = build_seasonal_pattern_curve(
+        df_used,
+        lookback_years=len(years_used),
+        smooth=0,
+        exclude_incomplete_last_year=False,
+    )
     si_map = dict(zip(curve["calendar_day"], curve["seasonal_index"]))
+    mean_lr_map: Dict[str, float] = {}
+    if "mean_log_return" in curve.columns:
+        mean_lr_map = dict(zip(curve["calendar_day"], curve["mean_log_return"]))
 
     per_year_rows = []
     out_stats: List[WindowStats] = []
@@ -448,13 +481,25 @@ def score_seasonal_windows(
         if direction in ("long", "short"):
             side = direction
         else:
-            si_e = si_map.get(e_mmdd, np.nan)
-            si_x = si_map.get(x_mmdd, np.nan)
-            side = (
-                "long"
-                if (np.isfinite(si_e) and np.isfinite(si_x) and si_x >= si_e)
-                else "short"
-            )
+            if mean_lr_map:
+                mmdds = _calendar_mmdd_range(e_mmdd, x_mmdd)
+                window_lr = 0.0
+                for mmdd in mmdds:
+                    r = mean_lr_map.get(mmdd)
+                    if r is None:
+                        continue
+                    if not np.isfinite(r):
+                        continue
+                    window_lr += float(r)
+                side = "long" if window_lr >= 0.0 else "short"
+            else:
+                si_e = si_map.get(e_mmdd, np.nan)
+                si_x = si_map.get(x_mmdd, np.nan)
+                side = (
+                    "long"
+                    if (np.isfinite(si_e) and np.isfinite(si_x) and si_x >= si_e)
+                    else "short"
+                )
 
         # year-by-year
         yearly: List[Dict] = []
