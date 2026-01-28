@@ -153,15 +153,8 @@ def _calendar_window_days(
         # Handle invalid dates like Feb 29 in non-leap years
         raise ValueError(f"Invalid exit date: {year}-{x_month:02d}-{x_day:02d}")
 
-    # Allow crossing year-end if exit < entry (rare for FX seasonal grids, but safe):
     if exit_ < entry:
-        try:
-            exit_ = exit_.replace(year=year + 1)
-        except ValueError:
-            # Handle case where next year also has invalid date
-            raise ValueError(
-                f"Invalid exit date in next year: {year+1}-{x_month:02d}-{x_day:02d}"
-            )
+        raise ValueError("exit_mmdd must be on or after entry_mmdd in V1.")
 
     return entry, exit_
 
@@ -209,9 +202,10 @@ def _calendar_mmdd_range(entry_mmdd: str, exit_mmdd: str) -> List[str]:
     entry = pd.Timestamp(year=2024, month=e_month, day=e_day)
     exit_ = pd.Timestamp(year=2024, month=x_month, day=x_day)
     if exit_ < entry:
-        exit_ = pd.Timestamp(year=2025, month=x_month, day=x_day)
+        raise ValueError("exit_mmdd must be on or after entry_mmdd in V1.")
     days = pd.date_range(entry, exit_, freq="D")
-    return [d.strftime("%m-%d") for d in days]
+    mmdds = [d.strftime("%m-%d") for d in days]
+    return [d for d in mmdds if d != "02-29"]
 
 
 def build_seasonal_pattern_curve(
@@ -241,10 +235,11 @@ def build_seasonal_pattern_curve(
         raise ValueError("No data.")
 
     # Optionally exclude the last year if it appears incomplete
+    excluded_years: List[int] = []
     if exclude_incomplete_last_year and len(years) > 1:
         last_year = years[-1]
         if not _is_year_complete(df, last_year):
-            print(f"Excluding incomplete last year: {last_year}")
+            excluded_years.append(int(last_year))
             years = years[:-1]  # Remove the last year
 
     keep_years = years[-lookback_years:] if len(years) > lookback_years else years
@@ -258,6 +253,7 @@ def build_seasonal_pattern_curve(
         }
     )
     tmp = tmp[tmp["year"].isin(keep_years)]
+    tmp = tmp[tmp["mmdd"] != "02-29"].copy()
     grp = (
         tmp.groupby("mmdd")["log_return"]
         .mean()
@@ -309,8 +305,11 @@ def _compute_window_pnl_for_year(
     """
     idx = df_year.index
     e = _snap_to_trading_day(idx, entry, "next")
-    x = _snap_to_trading_day(idx, exit_, "prev")
-    if (e is None) or (x is None) or (x <= e):
+    x = _snap_to_trading_day(idx, exit_, "next")
+    if (e is None) or (x is None) or (x < e):
+        return None
+
+    if int(e.year) != int(entry.year) or int(x.year) != int(entry.year):
         return None
 
     entry_px = float(df_year.loc[e, "close"])
@@ -504,9 +503,8 @@ def score_seasonal_windows(
         # year-by-year
         yearly: List[Dict] = []
         for y in years_used:
-            # slice that year plus possible spillover to next year for exit snapping
             mask = (df.index >= pd.Timestamp(y, 1, 1)) & (
-                df.index < pd.Timestamp(y + 1, 12, 31) + pd.Timedelta(days=2)
+                df.index <= pd.Timestamp(y, 12, 31)
             )
             dyy = df.loc[mask]
             if dyy.empty:
@@ -612,6 +610,30 @@ def score_seasonal_windows(
         key=lambda w: (w.win_rate * max(w.avg_profit_points, 0.0), w.num_trades),
         reverse=True,
     )
+
+    def _mmdd_ordinal(mmdd: str) -> int:
+        m, d = map(int, mmdd.split("-"))
+        return int(pd.Timestamp(2023, m, d).dayofyear)
+
+    suppression_days = 7
+    kept: List[WindowStats] = []
+    suppressed: List[tuple[int, int]] = []
+    for w in out_stats:
+        e_ord = _mmdd_ordinal(w.entry_mmdd)
+        x_ord = _mmdd_ordinal(w.exit_mmdd)
+        is_suppressed = False
+        for se, sx in suppressed:
+            if (
+                abs(e_ord - se) <= suppression_days
+                and abs(x_ord - sx) <= suppression_days
+            ):
+                is_suppressed = True
+                break
+        if is_suppressed:
+            continue
+        kept.append(w)
+        suppressed.append((e_ord, x_ord))
+    out_stats = kept
     return out_stats, per_year_df
 
 
@@ -741,7 +763,9 @@ def _compute_pattern_return_frac(
     if direction == "long":
         return (exit_px - entry_px) / entry_px
     if direction == "short":
-        return (entry_px - exit_px) / entry_px
+        if exit_px == 0.0:
+            raise ValueError("exit_px must be non-zero")
+        return (entry_px / exit_px) - 1.0
     raise ValueError(f"Unsupported direction: {direction!r}")
 
 
