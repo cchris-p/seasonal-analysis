@@ -36,6 +36,8 @@ class SeasonalAnalysisResult:
     analysis_start_date: str
     analysis_end_date: str
     num_years: int
+    curve_years_used: List[int] = field(default_factory=list)
+    curve_years_excluded: List[int] = field(default_factory=list)
 
 
 # ---------- Utilities ----------
@@ -229,39 +231,79 @@ def build_seasonal_pattern_curve(
     Returns DataFrame with columns: ['calendar_day','seasonal_index'] with 'MM-DD' strings.
     """
     df = _ensure_dt_index(df)
-    # Determine years to include
     years = _available_years(df)
     if len(years) == 0:
         raise ValueError("No data.")
 
-    # Optionally exclude the last year if it appears incomplete
     excluded_years: List[int] = []
     if exclude_incomplete_last_year and len(years) > 1:
         last_year = years[-1]
         if not _is_year_complete(df, last_year):
-            excluded_years.append(int(last_year))
-            years = years[:-1]  # Remove the last year
+            excluded_years.append(last_year)
+            years = years[:-1]
 
     keep_years = years[-lookback_years:] if len(years) > lookback_years else years
 
-    log_returns = _compute_log_returns_per_year(df, price_col=price_col)
-    tmp = pd.DataFrame(
-        {
-            "mmdd": df.index.strftime("%m-%d"),
-            "year": df.index.year,
-            "log_return": log_returns.values,
-        }
-    )
-    tmp = tmp[tmp["year"].isin(keep_years)]
-    tmp = tmp[tmp["mmdd"] != "02-29"].copy()
+    mmdd_all = [
+        d.strftime("%m-%d")
+        for d in pd.date_range(
+            pd.Timestamp(2024, 1, 1), pd.Timestamp(2024, 12, 31), freq="D"
+        )
+        if d.strftime("%m-%d") != "02-29"
+    ]
+
+    rows: List[Dict[str, float]] = []
+    curve_years_used: List[int] = []
+    curve_years_excluded: List[int] = []
+
+    for y in keep_years:
+        df_y = df[df.index.year == int(y)].copy()
+        if df_y.empty:
+            curve_years_excluded.append(int(y))
+            continue
+
+        idx_y = df_y.index
+        prices = df_y[price_col].astype(float)
+        log_r_y = np.log(prices / prices.shift(1))
+
+        valid_year = True
+        for mmdd in mmdd_all:
+            m, d = map(int, mmdd.split("-"))
+            target = pd.Timestamp(year=int(y), month=m, day=d)
+            snapped = _snap_to_trading_day(idx_y, target, "next")
+            if snapped is None or int(snapped.year) != int(y):
+                valid_year = False
+                break
+
+            r = log_r_y.get(snapped)
+            try:
+                r_f = float(r) if r is not None and np.isfinite(r) else 0.0
+            except Exception:
+                r_f = 0.0
+            rows.append({"mmdd": mmdd, "year": float(int(y)), "log_return": r_f})
+
+        if valid_year:
+            curve_years_used.append(int(y))
+        else:
+            curve_years_excluded.append(int(y))
+
+    tmp = pd.DataFrame(rows)
+    if tmp.empty:
+        raise ValueError("No usable years after applying curve construction rules.")
+
+    curve_years_excluded = sorted(set(excluded_years + curve_years_excluded))
+    curve_years_used = sorted(set(curve_years_used) - set(curve_years_excluded))
+    tmp = tmp[tmp["year"].isin([float(y) for y in curve_years_used])].copy()
+
     grp = (
         tmp.groupby("mmdd")["log_return"]
         .mean()
         .fillna(0.0)
+        .reindex(mmdd_all, fill_value=0.0)
         .to_frame("mean_log_return")
         .reset_index()
+        .rename(columns={"index": "mmdd"})
     )
-    grp = grp.sort_values("mmdd").reset_index(drop=True)
 
     curve = np.exp(np.cumsum(grp["mean_log_return"].astype(float).to_numpy()))
     base = float(curve[0]) if len(curve) else 1.0
@@ -273,7 +315,10 @@ def build_seasonal_pattern_curve(
         si = grp["seasonal_index"].rolling(smooth, min_periods=1, center=True).mean()
         grp["seasonal_index"] = si
 
-    return grp.rename(columns={"mmdd": "calendar_day"})
+    out = grp.rename(columns={"mmdd": "calendar_day"})
+    out.attrs["curve_years_used"] = curve_years_used
+    out.attrs["curve_years_excluded"] = curve_years_excluded
+    return out
 
 
 # ---------- Window grid and scoring ----------
@@ -705,6 +750,17 @@ def run_seasonal_analysis(
         exclude_incomplete_last_year=exclude_incomplete_last_year,
     )
 
+    curve_years_used = []
+    curve_years_excluded = []
+    try:
+        curve_years_used = list(seasonal_curve.attrs.get("curve_years_used") or [])
+        curve_years_excluded = list(
+            seasonal_curve.attrs.get("curve_years_excluded") or []
+        )
+    except Exception:
+        curve_years_used = []
+        curve_years_excluded = []
+
     # Build grid
     windows = generate_calendar_grid(
         months,
@@ -736,6 +792,8 @@ def run_seasonal_analysis(
         analysis_start_date=analysis_start_date,
         analysis_end_date=analysis_end_date,
         num_years=num_years,
+        curve_years_used=curve_years_used,
+        curve_years_excluded=curve_years_excluded,
     )
 
 
