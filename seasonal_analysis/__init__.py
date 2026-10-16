@@ -3,6 +3,10 @@ from __future__ import annotations
 from .analysis import (
     WindowStats,
     SeasonalAnalysisResult,
+    CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    CURVE_MODE_LINK_RELATIVES,
+    CURVE_MODE_YEARLY_AVERAGE,
+    CURVE_MODES,
     compute_year_range_normalized_index,
     build_seasonal_pattern_curve,
     generate_calendar_grid,
@@ -24,6 +28,10 @@ from .poi_charts import compute_poi_charts_payload
 __all__ = [
     "WindowStats",
     "SeasonalAnalysisResult",
+    "CURVE_MODE_LOG_RETURN_COMPOUNDED",
+    "CURVE_MODE_LINK_RELATIVES",
+    "CURVE_MODE_YEARLY_AVERAGE",
+    "CURVE_MODES",
     "compute_year_range_normalized_index",
     "build_seasonal_pattern_curve",
     "generate_calendar_grid",

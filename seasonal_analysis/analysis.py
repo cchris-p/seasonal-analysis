@@ -8,6 +8,17 @@ from .config_assets import is_futures_asset
 from .load_data import load_price_data
 
 
+# ---------- Curve modes ----------
+CURVE_MODE_LOG_RETURN_COMPOUNDED = "log_return_compounded"
+CURVE_MODE_LINK_RELATIVES = "link_relatives"
+CURVE_MODE_YEARLY_AVERAGE = "yearly_average"
+CURVE_MODES = (
+    CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    CURVE_MODE_LINK_RELATIVES,
+    CURVE_MODE_YEARLY_AVERAGE,
+)
+
+
 # ---------- Data Classes ----------
 @dataclass
 class WindowStats:
@@ -38,6 +49,7 @@ class SeasonalAnalysisResult:
     num_years: int
     curve_years_used: List[int] = field(default_factory=list)
     curve_years_excluded: List[int] = field(default_factory=list)
+    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED
 
 
 # ---------- Utilities ----------
@@ -210,30 +222,116 @@ def _calendar_mmdd_range(entry_mmdd: str, exit_mmdd: str) -> List[str]:
     return [d for d in mmdds if d != "02-29"]
 
 
+def _yearly_average_log_factors(
+    df: pd.DataFrame,
+    price_col: str,
+    mmdd_all: List[str],
+    years_used: List[int],
+    window: int = 252,
+    min_periods: int = 60,
+) -> np.ndarray:
+    """Per-slot log factors for the yearly-average (trailing-year) detrended mode.
+
+    Each trading day's price is normalized by a trailing one-year (252-trading-day)
+    moving average — the TSM Ch.10 moving-average / yearly-average detrending — so the
+    secular level and trend are removed **causally** (only past bars enter the average).
+    The normalized ratio is averaged per calendar slot across the used years and rebased
+    to a cross-slot mean of 100; the returned per-slot log factors reconstruct that index.
+
+    Args:
+        df: Full OHLCV frame with a DatetimeIndex.
+        price_col: Price column to normalize.
+        mmdd_all: Ordered calendar slots (``MM-DD``, ``02-29`` dropped).
+        years_used: Curve years accepted for the curve.
+        window: Trailing window length in trading days (default one year).
+        min_periods: Minimum observations for the trailing average to be defined.
+
+    Returns:
+        Array of per-slot log factors (length ``len(mmdd_all)``).
+    """
+    if df is None or df.empty:
+        return np.zeros(len(mmdd_all), dtype=float)
+
+    prices = df[price_col].astype(float)
+    ma = prices.rolling(window, min_periods=min_periods).mean()
+    ratio = prices / ma
+    ratio = ratio.replace([np.inf, -np.inf], np.nan)
+
+    tmp = pd.DataFrame(
+        {
+            "mmdd": df.index.strftime("%m-%d"),
+            "year": np.asarray(df.index.year),
+            "ratio": ratio.to_numpy(),
+        }
+    )
+    if years_used:
+        tmp = tmp[tmp["year"].isin([int(y) for y in years_used])]
+    tmp = tmp.dropna(subset=["ratio"])
+    if tmp.empty:
+        return np.zeros(len(mmdd_all), dtype=float)
+
+    slot = tmp.groupby("mmdd")["ratio"].mean().reindex(mmdd_all)
+    slot = slot.ffill().bfill()
+    if slot.isna().all():
+        return np.zeros(len(mmdd_all), dtype=float)
+    slot = slot.fillna(1.0)
+
+    mean_slot = float(slot.mean())
+    if not np.isfinite(mean_slot) or mean_slot == 0.0:
+        mean_slot = 1.0
+    idx = slot / mean_slot * 100.0
+
+    lf = np.log(idx / idx.shift(1))
+    lf.iloc[0] = 0.0
+    return lf.astype(float).to_numpy()
+
+
 def build_seasonal_pattern_curve(
     df: pd.DataFrame,
     lookback_years: int = 15,
     price_col: str = "close",
     smooth: int = 0,
     exclude_incomplete_last_year: bool = True,
+    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
 ) -> pd.DataFrame:
     """
-    Build a daily seasonal index curve (0-100) by averaging the year-normalized index
-    for each calendar 'month-day' across the most recent `lookback_years`.
+    Build a daily seasonal index curve by averaging calendar-slot returns/factors across
+    the most recent `lookback_years` under the requested ``curve_mode``.
 
     Args:
-        df: DataFrame with OHLCV data and datetime index
-        lookback_years: Number of recent years to include
-        price_col: Column name for price data
-        smooth: Moving average window for smoothing (0 = no smoothing)
-        exclude_incomplete_last_year: If True, exclude the last year if it appears incomplete
+        df: DataFrame with OHLCV data and datetime index.
+        lookback_years: Number of recent years to include.
+        price_col: Column name for price data.
+        smooth: Moving average window for smoothing (0 = no smoothing).
+        exclude_incomplete_last_year: If True, exclude the last year if it appears
+            incomplete.
+        curve_mode: One of
+            - ``log_return_compounded`` (default/legacy): compound the per-slot mean daily
+              log return; **drift-inclusive** (the curve trends with the average return).
+            - ``link_relatives``: the TSM Ch.10 link-relative method, drift-neutralized by
+              removing the mean per-slot log return before compounding, so the seasonal
+              curve carries no secular drift.
+            - ``yearly_average``: the TSM Ch.10 moving-average / yearly-average detrending,
+              each day normalized by a trailing one-year (252-trading-day) moving average
+              and rebased to a cross-slot mean of 100, so the curve is drift-free and
+              causal (only past bars enter the trailing average).
 
-    Returns DataFrame with columns: ['calendar_day','seasonal_index'] with 'MM-DD' strings.
+    Returns:
+        DataFrame with columns ``['calendar_day','seasonal_index','mean_log_return']``
+        where ``calendar_day`` is ``MM-DD``. ``mean_log_return`` holds the per-slot factor
+        used for direction resolution (drift-neutral for the detrended modes) and
+        ``attrs`` records ``curve_years_used``, ``curve_years_excluded`` and ``curve_mode``.
     """
     df = _ensure_dt_index(df)
     years = _available_years(df)
     if len(years) == 0:
         raise ValueError("No data.")
+
+    mode = str(curve_mode or CURVE_MODE_LOG_RETURN_COMPOUNDED).strip().lower()
+    if mode not in CURVE_MODES:
+        raise ValueError(
+            f"Unsupported curve_mode: {curve_mode!r}; expected one of {CURVE_MODES}"
+        )
 
     excluded_years: List[int] = []
     if exclude_incomplete_last_year and len(years) > 1:
@@ -280,7 +378,21 @@ def build_seasonal_pattern_curve(
                 r_f = float(r) if r is not None and np.isfinite(r) else 0.0
             except Exception:
                 r_f = 0.0
-            rows.append({"mmdd": mmdd, "year": float(int(y)), "log_return": r_f})
+
+            p = prices.get(snapped)
+            try:
+                p_f = float(p) if p is not None and np.isfinite(p) else np.nan
+            except Exception:
+                p_f = np.nan
+
+            rows.append(
+                {
+                    "mmdd": mmdd,
+                    "year": float(int(y)),
+                    "log_return": r_f,
+                    "price": p_f,
+                }
+            )
 
         if valid_year:
             curve_years_used.append(int(y))
@@ -305,7 +417,19 @@ def build_seasonal_pattern_curve(
         .rename(columns={"index": "mmdd"})
     )
 
-    curve = np.exp(np.cumsum(grp["mean_log_return"].astype(float).to_numpy()))
+    if mode == CURVE_MODE_LINK_RELATIVES:
+        m = grp["mean_log_return"].astype(float)
+        per_slot = (m - m.mean()).to_numpy()
+    elif mode == CURVE_MODE_YEARLY_AVERAGE:
+        per_slot = _yearly_average_log_factors(
+            df, price_col, mmdd_all, curve_years_used
+        )
+    else:  # CURVE_MODE_LOG_RETURN_COMPOUNDED
+        per_slot = grp["mean_log_return"].astype(float).to_numpy()
+
+    grp["mean_log_return"] = per_slot
+
+    curve = np.exp(np.cumsum(per_slot))
     base = float(curve[0]) if len(curve) else 1.0
     if not np.isfinite(base) or base == 0.0:
         base = 1.0
@@ -318,6 +442,7 @@ def build_seasonal_pattern_curve(
     out = grp.rename(columns={"mmdd": "calendar_day"})
     out.attrs["curve_years_used"] = curve_years_used
     out.attrs["curve_years_excluded"] = curve_years_excluded
+    out.attrs["curve_mode"] = mode
     return out
 
 
@@ -485,6 +610,7 @@ def score_seasonal_windows(
     direction: str = "auto",
     min_trades: int = 10,
     min_win_rate: float = 0.80,
+    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
 ) -> Tuple[List[WindowStats], pd.DataFrame]:
     """Score seasonal windows across multiple years and filter by performance.
 
@@ -494,9 +620,13 @@ def score_seasonal_windows(
         windows: List of (entry_mmdd, exit_mmdd) tuples to evaluate.
         lookback_years: Number of recent years to backtest (default: 15).
         direction: Trade direction - 'long', 'short', or 'auto'. Auto determines
-            direction based on seasonal curve slope (default: 'auto').
+            direction based on the seasonal curve slope (default: 'auto').
         min_trades: Minimum number of historical trades required (default: 10).
         min_win_rate: Minimum win rate threshold (0-1) to include (default: 0.80).
+        curve_mode: Curve construction mode used for the direction-resolution curve
+            (see ``build_seasonal_pattern_curve``). Direction resolution uses the
+            drift-neutral factors for the detrended modes; it never uses the scored
+            window's own realized P&L.
 
     Returns:
         Tuple of:
@@ -508,6 +638,16 @@ def score_seasonal_windows(
     years_all = _available_years(df)
     years_used = (
         years_all[-lookback_years:] if len(years_all) > lookback_years else years_all
+    )
+    df_used = df[df.index.year.isin(years_used)].copy()
+    pip_factor = _pip_factor_for_symbol(symbol)
+
+    curve = build_seasonal_pattern_curve(
+        df_used,
+        lookback_years=len(years_used),
+        smooth=0,
+        exclude_incomplete_last_year=False,
+        curve_mode=curve_mode,
     )
     df_used = df[df.index.year.isin(years_used)].copy()
     pip_factor = _pip_factor_for_symbol(symbol)
@@ -709,6 +849,7 @@ def run_seasonal_analysis(
     min_win_rate: float = 0.80,
     smooth: int = 3,
     exclude_incomplete_last_year: bool = True,
+    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
 ) -> SeasonalAnalysisResult:
     """Execute complete seasonal pattern analysis for a trading symbol.
 
@@ -731,6 +872,9 @@ def run_seasonal_analysis(
         min_win_rate: Minimum win rate (0-1) to qualify a window (default: 0.80).
         smooth: Moving average window for seasonal curve smoothing (default: 3).
         exclude_incomplete_last_year: If True, exclude incomplete final year (default: True).
+        curve_mode: Seasonal curve construction mode (default: ``log_return_compounded``).
+            Use ``link_relatives`` or ``yearly_average`` for drift-free seasonal curves
+            (see ``build_seasonal_pattern_curve``).
 
     Returns:
         SeasonalAnalysisResult containing:
@@ -759,6 +903,7 @@ def run_seasonal_analysis(
         lookback_years=lookback_years,
         smooth=smooth,
         exclude_incomplete_last_year=exclude_incomplete_last_year,
+        curve_mode=curve_mode,
     )
 
     curve_years_used = []
@@ -790,6 +935,7 @@ def run_seasonal_analysis(
         direction=direction,
         min_trades=min_trades,
         min_win_rate=min_win_rate,
+        curve_mode=curve_mode,
     )
 
     return SeasonalAnalysisResult(
@@ -805,6 +951,7 @@ def run_seasonal_analysis(
         num_years=num_years,
         curve_years_used=curve_years_used,
         curve_years_excluded=curve_years_excluded,
+        curve_mode=str(curve_mode or CURVE_MODE_LOG_RETURN_COMPOUNDED).strip().lower(),
     )
 
 
