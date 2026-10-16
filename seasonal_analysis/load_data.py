@@ -21,7 +21,15 @@ def apply_data_hygiene(df: pd.DataFrame) -> pd.DataFrame:
     - keep OHLCV if present
     - ensure DatetimeIndex, sort, drop duplicate timestamps
     - drop rows with missing close
+
+    Declared data provenance (``df.attrs["data_provenance"]``) is preserved.
     """
+    provenance = None
+    try:
+        provenance = df.attrs.get("data_provenance")
+    except Exception:
+        provenance = None
+
     df = df.copy()
     # standardize columns
     df.rename(columns={c: str(c).lower() for c in df.columns}, inplace=True)
@@ -34,6 +42,8 @@ def apply_data_hygiene(df: pd.DataFrame) -> pd.DataFrame:
     df = df[~df.index.duplicated(keep="first")]
     if "close" in df.columns:
         df = df.dropna(subset=["close"])
+    if provenance is not None:
+        df.attrs["data_provenance"] = provenance
     return df
 
 
@@ -42,11 +52,27 @@ def load_price_data(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     granularity: str = "D",
+    source: str = "firstratedata",
 ) -> pd.DataFrame:
     """Centralized loader for seasonal pipeline.
 
     Selects the appropriate local data loader by asset class and applies basic hygiene.
     Returns a DataFrame indexed by datetime with at least a 'close' column.
+
+    Args:
+        symbol: Trading symbol (e.g. 'EURUSD', 'ES').
+        start_date: Optional inclusive start date ('YYYY-MM-DD').
+        end_date: Optional inclusive end date ('YYYY-MM-DD').
+        granularity: Bar granularity (default daily 'D').
+        source: Spot-FX data source. ``"dukascopy"`` selects the canonical
+            Dukascopy ``GMT+0_US-DST`` corpus (provenance-tagged); the default
+            ``"firstratedata"`` is the legacy FRD source. Futures ignore this
+            (FRD continuous futures remain the futures source).
+
+    Returns:
+        DataFrame indexed by datetime with at least a 'close' column; a
+        provenance mapping (``df.attrs["data_provenance"]``) is attached when the
+        provider adapter supplies one (Dukascopy does).
     """
     cfg = get_config(symbol)
     if is_forex_asset(symbol):
@@ -55,6 +81,7 @@ def load_price_data(
             start_date=start_date,
             end_date=end_date,
             granularity=granularity,
+            source=source,
         )
     elif is_futures_asset(symbol):
         df = get_futures_data_by_ticker(

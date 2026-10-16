@@ -58,6 +58,8 @@ class SeasonalAnalysisResult:
     curve_years_excluded: List[int] = field(default_factory=list)
     curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED
     costs_included: bool = False
+    data_source: str = ""
+    data_provenance: Optional[Dict[str, Any]] = None
 
 
 # ---------- Utilities ----------
@@ -972,6 +974,7 @@ def run_seasonal_analysis(
     curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
     cost_model: Optional[CostModel] = None,
     spread_series: Optional[Dict[str, Any]] = None,
+    source: str = "firstratedata",
 ) -> SeasonalAnalysisResult:
     """Execute complete seasonal pattern analysis for a trading symbol.
 
@@ -1001,6 +1004,8 @@ def run_seasonal_analysis(
             per-trade net-of-cost metrics are computed and window selection uses them.
         spread_series: Optional calibrated per-bar spread series (``epoch_seconds`` /
             ``spread``) used to replace the static spread component per trade.
+        source: Spot-FX data source (``firstratedata`` default; ``dukascopy`` selects
+            the canonical Dukascopy ``GMT+0_US-DST`` corpus). Futures ignore it.
 
     Returns:
         SeasonalAnalysisResult containing:
@@ -1013,7 +1018,18 @@ def run_seasonal_analysis(
             - df: Original price data DataFrame
             - selected_window: Top-ranked window (None if no windows qualify)
     """
-    df = load_price_data(symbol, start_date=start, end_date=end, granularity="D")
+    df = load_price_data(
+        symbol, start_date=start, end_date=end, granularity="D", source=source
+    )
+    try:
+        data_provenance = dict(df.attrs.get("data_provenance") or {}) or None
+    except Exception:
+        data_provenance = None
+    data_source = ""
+    if isinstance(data_provenance, dict):
+        data_source = str(data_provenance.get("data_source") or "")
+    if not data_source:
+        data_source = str(source or "").strip().lower()
     df = _ensure_dt_index(df)
     df = df.loc[df.index >= pd.to_datetime(start)]
     years_available = _available_years(df)
@@ -1081,6 +1097,8 @@ def run_seasonal_analysis(
         curve_years_excluded=curve_years_excluded,
         curve_mode=str(curve_mode or CURVE_MODE_LOG_RETURN_COMPOUNDED).strip().lower(),
         costs_included=cost_model is not None,
+        data_source=data_source,
+        data_provenance=data_provenance,
     )
 
 
