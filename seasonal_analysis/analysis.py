@@ -435,7 +435,10 @@ def generate_calendar_grid(
         for d in range(entry_day_range[0], entry_day_range[1] + 1):
             try:
                 pd.Timestamp(year=2024, month=m, day=d)  # validate date
-                entries.append(f"{m:02d}-{d:02d}")
+                mmdd = f"{m:02d}-{d:02d}"
+                if mmdd == "02-29":
+                    continue
+                entries.append(mmdd)
             except ValueError:
                 continue
 
@@ -444,7 +447,10 @@ def generate_calendar_grid(
         for d in range(exit_day_range[0], exit_day_range[1] + 1):
             try:
                 pd.Timestamp(year=2024, month=m, day=d)
-                exits.append(f"{m:02d}-{d:02d}")
+                mmdd = f"{m:02d}-{d:02d}"
+                if mmdd == "02-29":
+                    continue
+                exits.append(mmdd)
             except ValueError:
                 continue
 
@@ -658,7 +664,10 @@ def score_seasonal_windows(
 
     def _mmdd_ordinal(mmdd: str) -> int:
         m, d = map(int, mmdd.split("-"))
-        return int(pd.Timestamp(2023, m, d).dayofyear)
+        try:
+            return int(pd.Timestamp(2024, m, d).dayofyear)
+        except ValueError:
+            return -1
 
     suppression_days = 7
     kept: List[WindowStats] = []
@@ -666,6 +675,8 @@ def score_seasonal_windows(
     for w in out_stats:
         e_ord = _mmdd_ordinal(w.entry_mmdd)
         x_ord = _mmdd_ordinal(w.exit_mmdd)
+        if e_ord < 0 or x_ord < 0:
+            continue
         is_suppressed = False
         for se, sx in suppressed:
             if (
