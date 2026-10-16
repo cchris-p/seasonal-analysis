@@ -26,6 +26,12 @@ from .plotting import (
 from .seasonal_filters import build_seasonal_filter
 from .poi_charts import compute_poi_charts_payload
 from .costs import CostModel, lookup_spread, trade_cost_frac
+from .spread_estimates import (
+    SPREAD_ESTIMATES_PIPS,
+    SPREAD_ESTIMATES_SOURCE,
+    default_cost_model,
+    estimated_spread_pips,
+)
 from .promotion import build_promotion_report, render_promotion_markdown
 from .significance import (
     hansen_spa,
@@ -65,6 +71,10 @@ __all__ = [
     "CostModel",
     "lookup_spread",
     "trade_cost_frac",
+    "SPREAD_ESTIMATES_PIPS",
+    "SPREAD_ESTIMATES_SOURCE",
+    "estimated_spread_pips",
+    "default_cost_model",
     "build_promotion_report",
     "render_promotion_markdown",
 ]
