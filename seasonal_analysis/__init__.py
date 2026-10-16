@@ -25,6 +25,7 @@ from .plotting import (
 )
 from .seasonal_filters import build_seasonal_filter
 from .poi_charts import compute_poi_charts_payload
+from .costs import CostModel, lookup_spread, trade_cost_frac
 from .significance import (
     hansen_spa,
     jitter_return_distribution,
@@ -60,4 +61,7 @@ __all__ = [
     "stationary_bootstrap_indices",
     "subperiod_consistency",
     "jitter_return_distribution",
+    "CostModel",
+    "lookup_spread",
+    "trade_cost_frac",
 ]

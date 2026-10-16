@@ -2,10 +2,11 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from .config_assets import is_futures_asset
 from .load_data import load_price_data
+from .costs import CostModel, trade_cost_frac
 
 
 # ---------- Curve modes ----------
@@ -33,6 +34,12 @@ class WindowStats:
     worst_drawdown_points: float
     direction: str  # 'long' or 'short'
     trades: Optional[pd.DataFrame] = field(default=None)
+    # Cost-aware (net) metrics — populated when a CostModel is supplied.
+    costs_included: bool = False
+    net_win_rate: float = 0.0
+    net_avg_profit_points: float = 0.0
+    net_median_profit_points: float = 0.0
+    cost_frac_mean: float = 0.0
 
 
 @dataclass
@@ -50,6 +57,7 @@ class SeasonalAnalysisResult:
     curve_years_used: List[int] = field(default_factory=list)
     curve_years_excluded: List[int] = field(default_factory=list)
     curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED
+    costs_included: bool = False
 
 
 # ---------- Utilities ----------
@@ -611,6 +619,8 @@ def score_seasonal_windows(
     min_trades: int = 10,
     min_win_rate: float = 0.80,
     curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    cost_model: Optional[CostModel] = None,
+    spread_series: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[WindowStats], pd.DataFrame]:
     """Score seasonal windows across multiple years and filter by performance.
 
@@ -720,10 +730,24 @@ def score_seasonal_windows(
         if not yearly:
             continue
 
+        if cost_model is not None and yearly:
+            _pip = 1.0 / pip_factor if pip_factor else 1.0
+            for _r in yearly:
+                _cf = trade_cost_frac(
+                    float(_r["entry_px"]),
+                    _pip,
+                    cost_model,
+                    _r.get("entry_dt"),
+                    spread_series,
+                )
+                _r["cost_frac"] = _cf
+                _r["cost_points"] = _cf * float(_r["entry_px"]) * float(pip_factor)
+                _r["net_pnl_points"] = float(_r["pnl_points"]) - _r["cost_points"]
+
         # per-trade DataFrame for this window
         trades_df = pd.DataFrame(yearly).sort_values("year")
 
-        # aggregate
+        # aggregate (gross)
         pnl = trades_df["pnl_points"].astype(float).to_numpy()
         wins = (pnl > 0).sum()
         num = len(trades_df)
@@ -739,6 +763,19 @@ def score_seasonal_windows(
             if num
             else 0.0
         )
+
+        # aggregate (net of cost) — only when a cost model is supplied
+        costs_included = cost_model is not None
+        net_win_rate = win_rate
+        net_avg_points = avg_points
+        net_med_points = med_points
+        cost_frac_mean = 0.0
+        if costs_included and num:
+            net_pnl = trades_df["net_pnl_points"].astype(float).to_numpy()
+            net_win_rate = float((net_pnl > 0).sum()) / num
+            net_avg_points = float(net_pnl.mean())
+            net_med_points = float(np.median(net_pnl))
+            cost_frac_mean = float(trades_df["cost_frac"].astype(float).mean())
 
         # enrich trades with percentage-based metrics
         if num:
@@ -775,8 +812,10 @@ def score_seasonal_windows(
             trades_df["max_rise_pct"] = max_rise_pcts
             trades_df["max_drop_pct"] = max_drop_pcts
 
-        # reliability filter
-        if (num >= min_trades) and (win_rate >= min_win_rate) and (avg_points > 0):
+        # reliability filter uses net metrics when costs are included
+        sel_win_rate = net_win_rate if costs_included else win_rate
+        sel_avg_points = net_avg_points if costs_included else avg_points
+        if (num >= min_trades) and (sel_win_rate >= min_win_rate) and (sel_avg_points > 0):
             out_stats.append(
                 WindowStats(
                     entry_mmdd=e_mmdd,
@@ -790,6 +829,11 @@ def score_seasonal_windows(
                     worst_drawdown_points=worst_dd,
                     direction=side,
                     trades=trades_df,
+                    costs_included=costs_included,
+                    net_win_rate=net_win_rate,
+                    net_avg_profit_points=net_avg_points,
+                    net_median_profit_points=net_med_points,
+                    cost_frac_mean=cost_frac_mean,
                 )
             )
 
@@ -926,6 +970,8 @@ def run_seasonal_analysis(
     smooth: int = 3,
     exclude_incomplete_last_year: bool = True,
     curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    cost_model: Optional[CostModel] = None,
+    spread_series: Optional[Dict[str, Any]] = None,
 ) -> SeasonalAnalysisResult:
     """Execute complete seasonal pattern analysis for a trading symbol.
 
@@ -951,6 +997,10 @@ def run_seasonal_analysis(
         curve_mode: Seasonal curve construction mode (default: ``log_return_compounded``).
             Use ``link_relatives`` or ``yearly_average`` for drift-free seasonal curves
             (see ``build_seasonal_pattern_curve``).
+        cost_model: Optional :class:`~seasonal_analysis.costs.CostModel`. When supplied,
+            per-trade net-of-cost metrics are computed and window selection uses them.
+        spread_series: Optional calibrated per-bar spread series (``epoch_seconds`` /
+            ``spread``) used to replace the static spread component per trade.
 
     Returns:
         SeasonalAnalysisResult containing:
@@ -1012,6 +1062,8 @@ def run_seasonal_analysis(
         min_trades=min_trades,
         min_win_rate=min_win_rate,
         curve_mode=curve_mode,
+        cost_model=cost_model,
+        spread_series=spread_series,
     )
 
     return SeasonalAnalysisResult(
@@ -1028,6 +1080,7 @@ def run_seasonal_analysis(
         curve_years_used=curve_years_used,
         curve_years_excluded=curve_years_excluded,
         curve_mode=str(curve_mode or CURVE_MODE_LOG_RETURN_COMPOUNDED).strip().lower(),
+        costs_included=cost_model is not None,
     )
 
 
