@@ -654,6 +654,9 @@ def score_seasonal_windows(
     df_used = df[df.index.year.isin(years_used)].copy()
     pip_factor = _pip_factor_for_symbol(symbol)
 
+    # NOTE: this call must carry ``curve_mode`` — the detrended modes
+    # (``link_relatives`` / ``yearly_average``) change ``mean_log_return`` and
+    # therefore the auto direction resolution below.
     curve = build_seasonal_pattern_curve(
         df_used,
         lookback_years=len(years_used),
@@ -661,19 +664,18 @@ def score_seasonal_windows(
         exclude_incomplete_last_year=False,
         curve_mode=curve_mode,
     )
-    df_used = df[df.index.year.isin(years_used)].copy()
-    pip_factor = _pip_factor_for_symbol(symbol)
-
-    curve = build_seasonal_pattern_curve(
-        df_used,
-        lookback_years=len(years_used),
-        smooth=0,
-        exclude_incomplete_last_year=False,
-    )
     si_map = dict(zip(curve["calendar_day"], curve["seasonal_index"]))
     mean_lr_map: Dict[str, float] = {}
     if "mean_log_return" in curve.columns:
         mean_lr_map = dict(zip(curve["calendar_day"], curve["mean_log_return"]))
+
+    # Precompute per-year slices once. The previous code rebuilt a full-frame
+    # boolean mask and re-sliced ``df`` for every (window, year) pair, which
+    # dominated the cost of scoring the full discovery grid.
+    _year_index = df.index.year
+    year_slices: Dict[int, pd.DataFrame] = {
+        int(y): df.loc[_year_index == int(y)] for y in years_used
+    }
 
     per_year_rows = []
     out_stats: List[WindowStats] = []
@@ -706,11 +708,8 @@ def score_seasonal_windows(
         # year-by-year
         yearly: List[Dict] = []
         for y in years_used:
-            mask = (df.index >= pd.Timestamp(y, 1, 1)) & (
-                df.index <= pd.Timestamp(y, 12, 31)
-            )
-            dyy = df.loc[mask]
-            if dyy.empty:
+            dyy = year_slices.get(int(y))
+            if dyy is None or dyy.empty:
                 continue
             try:
                 entry_dt, exit_dt = _calendar_window_days(y, e_mmdd, x_mmdd)
