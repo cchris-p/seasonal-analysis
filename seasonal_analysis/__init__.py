@@ -16,6 +16,7 @@ from .analysis import (
     build_cumulative_profit_series,
     summarize_window_kpis,
     compute_pattern_vs_rest_vs_buy_and_hold,
+    build_window_return_matrix,
 )
 from .plotting import (
     plot_seasonal_curve_with_windows,
@@ -24,6 +25,13 @@ from .plotting import (
 )
 from .seasonal_filters import build_seasonal_filter
 from .poi_charts import compute_poi_charts_payload
+from .significance import (
+    hansen_spa,
+    jitter_return_distribution,
+    stationary_bootstrap_indices,
+    subperiod_consistency,
+    whites_reality_check,
+)
 
 __all__ = [
     "WindowStats",
@@ -41,9 +49,15 @@ __all__ = [
     "build_cumulative_profit_series",
     "summarize_window_kpis",
     "compute_pattern_vs_rest_vs_buy_and_hold",
+    "build_window_return_matrix",
     "plot_seasonal_curve_with_windows",
     "plot_per_year_pnl",
     "plot_seasonal_stacks_by_lookback",
     "build_seasonal_filter",
     "compute_poi_charts_payload",
+    "hansen_spa",
+    "whites_reality_check",
+    "stationary_bootstrap_indices",
+    "subperiod_consistency",
+    "jitter_return_distribution",
 ]

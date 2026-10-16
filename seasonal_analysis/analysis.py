@@ -795,7 +795,9 @@ def score_seasonal_windows(
 
         per_year_rows.extend(yearly)
 
-    per_year_df = pd.DataFrame(per_year_rows).sort_values(["entry_mmdd", "year"])
+    per_year_df = pd.DataFrame(per_year_rows)
+    if not per_year_df.empty:
+        per_year_df = per_year_df.sort_values(["entry_mmdd", "year"])
     # Rank by simple composite
     out_stats.sort(
         key=lambda w: (w.win_rate * max(w.avg_profit_points, 0.0), w.num_trades),
@@ -831,6 +833,80 @@ def score_seasonal_windows(
         suppressed.append((e_ord, x_ord))
     out_stats = kept
     return out_stats, per_year_df
+
+
+def build_window_return_matrix(
+    df: pd.DataFrame,
+    symbol: str,
+    windows: List[Tuple[str, str]],
+    direction: str = "auto",
+    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    value_col: str = "profit_pct",
+) -> Tuple[np.ndarray, List[int], List[str]]:
+    """Build a ``(n_years, n_windows)`` matrix of per-year returns for a window set.
+
+    Used by the data-snooping tests (White's Reality Check / Hansen SPA): each column
+    is a candidate strategy (a window with its resolved direction) and each row is a
+    period (year). The full window grid is scored once with the filters disabled so
+    every candidate is represented.
+
+    Args:
+        df: OHLCV frame with a DatetimeIndex.
+        symbol: Symbol for pip/point conversion.
+        windows: Candidate ``(entry_mmdd, exit_mmdd)`` pairs (the discovery grid).
+        direction: Direction mode passed to :func:`score_seasonal_windows`
+            (``auto`` resolves per-window).
+        curve_mode: Curve mode used for direction resolution.
+        value_col: Per-year return column to place in the matrix (default
+            ``profit_pct``; use ``pnl_points`` for point returns).
+
+    Returns:
+        ``(matrix, years, strategy_keys)`` where ``strategy_keys`` are
+        ``"<entry>-><exit>"`` strings (direction is resolved per window).
+    """
+    if not windows:
+        return np.zeros((0, 0)), [], []
+
+    df = _ensure_dt_index(df)
+    years_all = _available_years(df)
+    _, per_year = score_seasonal_windows(
+        df=df,
+        symbol=symbol,
+        windows=windows,
+        lookback_years=max(len(years_all), 1),
+        direction=direction,
+        min_trades=0,
+        min_win_rate=0.0,
+        curve_mode=curve_mode,
+    )
+    if per_year is None or per_year.empty:
+        return np.zeros((0, 0)), [], []
+
+    py = per_year.copy()
+    if value_col == "pnl_points":
+        py["_value"] = py["pnl_points"].astype(float)
+    elif value_col in ("profit_pct", "return_frac"):
+        py["_value"] = [
+            _compute_pattern_return_frac(
+                str(getattr(row, "direction")),
+                float(getattr(row, "entry_px")),
+                float(getattr(row, "exit_px")),
+            )
+            for row in py.itertuples(index=False)
+        ]
+    else:
+        raise ValueError(
+            "value_col must be 'return_frac'/'profit_pct' or 'pnl_points', "
+            f"got {value_col!r}"
+        )
+
+    py["strategy"] = py["entry_mmdd"].astype(str) + "->" + py["exit_mmdd"].astype(str)
+    mat = py.pivot_table(
+        index="year", columns="strategy", values="_value", aggfunc="first"
+    )
+    years = [int(y) for y in mat.index.to_list()]
+    keys = [str(k) for k in mat.columns.to_list()]
+    return mat.to_numpy(dtype=float), years, keys
 
 
 # ---------- Orchestration ----------
