@@ -5,6 +5,7 @@ from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
 from trading_utils.constants import (
+    crypto_assets as CRYPTO_ASSETS,
     forex_majors_minors as FOREX_ASSETS,
     firstratedata_futures_tickers as FUTURES_ASSETS,
 )
@@ -69,6 +70,7 @@ REGISTRY: Dict[str, AssetConfig] = {
 
 FOREX_SET = frozenset(FOREX_ASSETS)
 FUTURES_SET = frozenset(FUTURES_ASSETS)
+CRYPTO_SET = frozenset(CRYPTO_ASSETS)
 
 
 def is_forex_asset(symbol: str) -> bool:
@@ -84,6 +86,10 @@ def is_futures_asset(symbol: str) -> bool:
     return symbol in FUTURES_SET
 
 
+def is_crypto_asset(symbol: str) -> bool:
+    return str(symbol or "").strip().upper() in CRYPTO_SET
+
+
 def get_config(s: str) -> AssetConfig:
     if s in REGISTRY:
         cfg = REGISTRY[s]
@@ -93,6 +99,8 @@ def get_config(s: str) -> AssetConfig:
         cfg = replace(base, symbol=s, pip_size=pip)
     elif s in FUTURES_SET:
         cfg = replace(DEFAULTS[AssetClass.FUTURES], symbol=s)
+    elif s in CRYPTO_SET:
+        cfg = replace(DEFAULTS[AssetClass.CRYPTO], symbol=s)
     else:
         # default to stock-style config for unknowns
         cfg = replace(DEFAULTS[AssetClass.STOCK], symbol=s)

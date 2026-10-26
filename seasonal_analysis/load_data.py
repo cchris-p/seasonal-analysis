@@ -13,7 +13,14 @@ from trading_utils.get_futures_data import get_futures_data_by_ticker
 
 # Minimal asset helpers
 from seasonal_analysis.config_assets import get_config, AssetClass
-from seasonal_analysis.config_assets import is_forex_asset, is_futures_asset
+from seasonal_analysis.universes import (
+    FUTURES_CLASS_SET,
+    FUTURES_CROSS_SECTOR,
+    FUTURES_CROSS_SECTOR_SET,
+    FUTURES_FULL,
+    FUTURES_FULL_SET,
+    asset_class_for_symbol,
+)
 from seasonal_analysis.data_sources import (
     dukascopy_available,
     dukascopy_m5_cache_available,
@@ -132,6 +139,67 @@ def _load_dukascopy_m5_cache_daily(
     return out
 
 
+_FRD_FUTURES_TF = {
+    "D": ("futures_full_1day_contin_adj_ratio_qdw3cl1", "1day"),
+    "H1": ("futures_full_1hour_contin_adj_ratio_nuxjsn9", "1hour"),
+    "M30": ("futures_full_30min_contin_adj_ratio_11assu1", "30min"),
+    "M5": ("futures_full_5min_contin_adj_ratio_sxsf000", "5min"),
+    "M1": ("futures_full_1min_contin_adj_ratio_wiihg54", "1min"),
+}
+
+
+def _load_frd_futures_direct(
+    symbol: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    granularity: str = "D",
+) -> pd.DataFrame:
+    """Read a frozen-root FRD continuous file directly.
+
+    ``trading_utils`` gates its futures loader on a provider ticker whitelist
+    that is narrower than the frozen audited universe (e.g. ``FCE``, ``US``,
+    ``ZO``, ``ZQ`` have files but are absent from the whitelist). This fallback
+    is restricted to the frozen futures roots and reads the same canonical
+    ratio-adjusted CSV, so the frozen universe is not silently truncated.
+    """
+    sym = str(symbol or "").strip().upper()
+    if sym not in FUTURES_CLASS_SET:
+        raise ValueError(f"{symbol!r} is not in a frozen futures universe")
+    gran = str(granularity).strip().upper()
+    if gran not in _FRD_FUTURES_TF:
+        raise ValueError(f"Granularity '{granularity}' not supported for futures.")
+    try:
+        from trading_utils.constants import require_firstratedata_root
+
+        root = require_firstratedata_root()
+    except Exception:
+        root = os.environ.get("FIRSTRATEDATA_ROOT")
+    if not root:
+        raise ValueError("FIRSTRATEDATA_ROOT is not configured")
+    subdir, token = _FRD_FUTURES_TF[gran]
+    path = os.path.join(
+        str(root), subdir, f"{sym}_full_{token}_continuous_ratio_adjusted.csv"
+    )
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"FRD futures file not found: {path}")
+    raw = pd.read_csv(path)
+    if "Date" in raw.columns:
+        idx = pd.to_datetime(raw["Date"], errors="coerce")
+    elif "Datetime" in raw.columns:
+        idx = pd.to_datetime(raw["Datetime"], errors="coerce")
+    else:
+        idx = pd.to_datetime(raw.iloc[:, 0], errors="coerce")
+    df = raw.copy()
+    df.index = idx
+    df = df.loc[~df.index.isna()].sort_index()
+    df = df.loc[~df.index.duplicated(keep="last")]
+    if start_date:
+        df = df.loc[df.index >= pd.to_datetime(start_date)]
+    if end_date:
+        df = df.loc[df.index <= pd.to_datetime(end_date)]
+    return df
+
+
 def load_price_data(
     symbol: str,
     start_date: Optional[str] = None,
@@ -160,9 +228,10 @@ def load_price_data(
         provider adapter supplies one (Dukascopy does).
     """
     cfg = get_config(symbol)
+    asset_class = asset_class_for_symbol(symbol)
     requested_source = source
     fallback_reason = None
-    if is_forex_asset(symbol):
+    if asset_class == AssetClass.FOREX:
         # Normalize at the loader boundary: the UI display token
         # (``dukascopy_gmt+0_us-dst``) and the loader token (``dukascopy``)
         # are different concepts. Never pass an unnormalized token through.
@@ -183,14 +252,27 @@ def load_price_data(
                 granularity=granularity,
                 source=canonical_source,
             )
-    elif is_futures_asset(symbol):
+    elif asset_class == AssetClass.FUTURES:
         canonical_source = "firstratedata"
-        df = get_futures_data_by_ticker(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            granularity=granularity,
-        )
+        try:
+            df = get_futures_data_by_ticker(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                granularity=granularity,
+                source=canonical_source,
+            )
+        except ValueError as exc:
+            # The provider ticker whitelist can lag the frozen audited universe;
+            # a frozen root with a canonical file must not be dropped.
+            if str(symbol).strip().upper() not in FUTURES_CLASS_SET:
+                raise
+            df = _load_frd_futures_direct(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+                granularity=granularity,
+            )
     else:
         raise ValueError(
             f"Unsupported or unknown asset class '{cfg.asset_class}' for symbol {symbol}."
@@ -211,6 +293,34 @@ def load_price_data(
     elif not isinstance(provenance, dict):
         provenance = {"raw": provenance}
     provenance = dict(provenance)
+    if asset_class == AssetClass.FUTURES:
+        # FRD continuous futures provenance. The ratio-adjusted continuous
+        # representation is the *decision* basis; roll/carry is not included in
+        # the thin bps cost, so this is recorded explicitly.
+        provenance.setdefault("data_source", "firstratedata")
+        provenance.setdefault("corpus", "firstratedata_continuous_futures")
+        provenance.setdefault("adjustment", FUTURES_FULL.adjustment)
+        provenance.setdefault("representation", "ratio_adjusted_continuous")
+        provenance.setdefault("quality", "provider_continuous_ratio_adjusted")
+        provenance.setdefault("units", FUTURES_FULL.units)
+        provenance.setdefault("annualization_days", FUTURES_FULL.annualization_days)
+        provenance.setdefault("session_timezone", FUTURES_FULL.session_timezone)
+        provenance.setdefault("cost_basis", FUTURES_FULL.cost_basis)
+        provenance.setdefault("round_trip_bps", FUTURES_FULL.round_trip_bps)
+        provenance.setdefault(
+            "fidelity_caveats", list(FUTURES_FULL.fidelity_caveats)
+        )
+        provenance.setdefault("coverage_end", FUTURES_FULL.oos_end)
+        sym_u = str(symbol).strip().upper()
+        spec = None
+        if sym_u in FUTURES_FULL_SET:
+            spec = FUTURES_FULL
+        elif sym_u in FUTURES_CROSS_SECTOR_SET:
+            spec = FUTURES_CROSS_SECTOR
+        if spec is not None:
+            provenance.setdefault("universe", spec.name)
+            provenance.setdefault("universe_version", spec.version)
+            provenance.setdefault("universe_hash", spec.hash)
     provenance.setdefault("data_source", canonical_source)
     provenance.setdefault("requested_data_source", str(requested_source or ""))
     provenance.setdefault("canonical_data_source", canonical_source)
