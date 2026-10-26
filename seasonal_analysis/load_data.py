@@ -1,3 +1,5 @@
+import glob
+import os
 import pandas as pd
 from typing import Optional
 
@@ -12,6 +14,13 @@ from trading_utils.get_futures_data import get_futures_data_by_ticker
 # Minimal asset helpers
 from seasonal_analysis.config_assets import get_config, AssetClass
 from seasonal_analysis.config_assets import is_forex_asset, is_futures_asset
+from seasonal_analysis.data_sources import (
+    dukascopy_available,
+    dukascopy_m5_cache_available,
+    dukascopy_m5_cache_dir,
+    normalize_data_source,
+    resolve_decision_source,
+)
 
 
 def apply_data_hygiene(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,6 +56,82 @@ def apply_data_hygiene(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _load_dukascopy_m5_cache_daily(
+    symbol: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    """Aggregate cached Dukascopy M5 bars to daily OHLCV.
+
+    Used only when ``DUKASCOPY_ROOT`` is unreachable *and* the caller has
+    explicitly configured ``DUKASCOPY_M5_CACHE_DIR``. The daily bars are a
+    representation of the same provider corpus, not a different data source;
+    the provenance records that they were derived from the M5 cache.
+    """
+    root = dukascopy_m5_cache_dir()
+    if not root:
+        raise ValueError("DUKASCOPY_M5_CACHE_DIR is not configured")
+    pattern = os.path.join(
+        root,
+        f"{symbol.lower()}_processed_*_M5_dukascopy_GMT+0_US-DST*_hygiene.pkl",
+    )
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise ValueError(f"No Dukascopy M5 cache files for {symbol}")
+    frames = []
+    for path in files:
+        try:
+            frame = pd.read_pickle(path)
+            frame.attrs = {}
+            frames.append(frame)
+        except Exception:
+            continue
+    if not frames:
+        raise ValueError(f"Could not read Dukascopy M5 cache for {symbol}")
+    df = pd.concat(frames, axis=0)
+    if "session_date" not in df.columns:
+        raise ValueError("Dukascopy M5 cache is missing session_date")
+    df = df.copy()
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df.loc[~df.index.isna()].sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    session = pd.to_datetime(df["session_date"], errors="coerce")
+    df = df.loc[~session.isna()].copy()
+    session = session.loc[df.index]
+    grouped = df.groupby(session)
+    out = pd.DataFrame(
+        {
+            "open": grouped["Open"].first(),
+            "high": grouped["High"].max(),
+            "low": grouped["Low"].min(),
+            "close": grouped["Close"].last(),
+            "volume": grouped["Volume"].sum()
+            if "Volume" in df.columns
+            else 0.0,
+        }
+    )
+    out.index = pd.to_datetime(out.index)
+    out = out.sort_index()
+    out = out.loc[~out.index.duplicated(keep="last")]
+    if start_date:
+        out = out.loc[out.index >= pd.to_datetime(start_date)]
+    if end_date:
+        out = out.loc[out.index <= pd.to_datetime(end_date)]
+    out.attrs["data_provenance"] = {
+        "data_source": "dukascopy",
+        "corpus": "dukascopy_m5_cache",
+        "derived_from": "dukascopy GMT+0_US-DST M5",
+        "time_base": "GMT+0_US-DST",
+        "quality": "derived_daily_from_m5_cache",
+        "cache_files": [os.path.basename(p) for p in files],
+        "fallback_reason": "canonical_dukascopy_root_unavailable",
+    }
+    return out
+
+
 def load_price_data(
     symbol: str,
     start_date: Optional[str] = None,
@@ -75,15 +160,31 @@ def load_price_data(
         provider adapter supplies one (Dukascopy does).
     """
     cfg = get_config(symbol)
+    requested_source = source
+    fallback_reason = None
     if is_forex_asset(symbol):
-        df = get_forex_data_by_pair(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            granularity=granularity,
-            source=source,
-        )
+        # Normalize at the loader boundary: the UI display token
+        # (``dukascopy_gmt+0_us-dst``) and the loader token (``dukascopy``)
+        # are different concepts. Never pass an unnormalized token through.
+        canonical_source, fallback_reason = resolve_decision_source(source)
+        if canonical_source == "dukascopy" and not dukascopy_available():
+            # The canonical corpus root is unreachable. Use the explicitly
+            # configured Dukascopy M5 cache as the same-provider representation
+            # (never silently substitute a different provider).
+            df = _load_dukascopy_m5_cache_daily(
+                symbol, start_date=start_date, end_date=end_date
+            )
+            fallback_reason = "canonical_corpus_unavailable_using_m5_cache"
+        else:
+            df = get_forex_data_by_pair(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                granularity=granularity,
+                source=canonical_source,
+            )
     elif is_futures_asset(symbol):
+        canonical_source = "firstratedata"
         df = get_futures_data_by_ticker(
             symbol=symbol,
             start_date=start_date,
@@ -97,7 +198,26 @@ def load_price_data(
 
     if df is None or len(df) == 0:
         raise ValueError(f"Loader returned no data for {symbol}")
-    return apply_data_hygiene(df)
+
+    df = apply_data_hygiene(df)
+    # Record both the requested token and the canonical token the adapter used.
+    provenance = None
+    try:
+        provenance = df.attrs.get("data_provenance")
+    except Exception:
+        provenance = None
+    if provenance is None:
+        provenance = {}
+    elif not isinstance(provenance, dict):
+        provenance = {"raw": provenance}
+    provenance = dict(provenance)
+    provenance.setdefault("data_source", canonical_source)
+    provenance.setdefault("requested_data_source", str(requested_source or ""))
+    provenance.setdefault("canonical_data_source", canonical_source)
+    if fallback_reason:
+        provenance.setdefault("fallback_reason", fallback_reason)
+    df.attrs["data_provenance"] = provenance
+    return df
 
 
 def load_symbol_data(

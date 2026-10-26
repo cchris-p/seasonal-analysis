@@ -33,6 +33,29 @@ from .spread_estimates import (
     estimated_spread_pips,
 )
 from .promotion import build_promotion_report, render_promotion_markdown
+from .data_sources import (
+    DECISION_CURVE_MODE,
+    DUKASCOPY,
+    FIRSTRATEDATA,
+    LEGACY_CURVE_MODE,
+    UnsupportedDataSource,
+    normalize_data_source,
+    normalize_requested_source,
+    dukascopy_available,
+    dukascopy_m5_cache_available,
+    dukascopy_m5_cache_dir,
+    resolve_decision_source,
+)
+from .accuracy import (
+    AccuracyConfig,
+    FOREX_PROFILES,
+    FOREX_UNIVERSE_28,
+    JOURNAL_WINDOWS,
+    build_accuracy_index,
+    evaluate_symbol_accuracy,
+    full_candidate_family,
+)
+from .context import build_context_payload
 from .significance import (
     hansen_spa,
     jitter_return_distribution,
@@ -77,4 +100,23 @@ __all__ = [
     "default_cost_model",
     "build_promotion_report",
     "render_promotion_markdown",
+    "DECISION_CURVE_MODE",
+    "DUKASCOPY",
+    "FIRSTRATEDATA",
+    "LEGACY_CURVE_MODE",
+    "UnsupportedDataSource",
+    "normalize_data_source",
+    "normalize_requested_source",
+    "dukascopy_available",
+    "dukascopy_m5_cache_available",
+    "dukascopy_m5_cache_dir",
+    "resolve_decision_source",
+    "AccuracyConfig",
+    "FOREX_PROFILES",
+    "FOREX_UNIVERSE_28",
+    "JOURNAL_WINDOWS",
+    "build_accuracy_index",
+    "evaluate_symbol_accuracy",
+    "full_candidate_family",
+    "build_context_payload",
 ]
