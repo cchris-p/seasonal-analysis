@@ -10,8 +10,10 @@ The futures universes are frozen. A membership change is a **new** universe
 the universe token so a later run can never be compared against a silently
 different symbol set.
 
-Crypto classification is present so the shared abstraction is generic, but there
-is **no crypto data routing or universe freeze here**; that is ``H-006``.
+The crypto universe is frozen (``H-006``) on the FRD crypto spot corpus. Provider
+classification deliberately remains broader than universe membership: an asset
+must be in ``CRYPTO_UNIVERSE_SET`` to be treated as a member of the frozen
+universe, even when the provider classifies it as crypto.
 """
 
 from __future__ import annotations
@@ -173,9 +175,55 @@ FUTURES_CROSS_SECTOR = UniverseSpec(
     fidelity_caveats=FUTURES_FULL.fidelity_caveats,
 )
 
+# ---------------------------------------------------------------------------
+# Frozen crypto universe (``H-006`` / ``SEAS-005``). FRD crypto spot, USD quote.
+# ---------------------------------------------------------------------------
+CRYPTO_VERSION = "frd-crypto-usd-liquid-25-v1"
+
+CRYPTO_SYMBOLS: Tuple[str, ...] = (
+    "BCH", "BNT", "BTC", "CVC", "DASH", "DOGE", "EOS", "ETC", "ETH", "FUN",
+    "ICX", "LTC", "MANA", "NEO", "OMG", "REP", "SNT", "TRX", "XLM", "XMR",
+    "XRP", "XTZ", "XVG", "ZEC", "ZRX",
+)
+
+CRYPTO_HASH = universe_hash(CRYPTO_VERSION, CRYPTO_SYMBOLS)
+
+# Universe membership is the frozen 25, never the broader provider crypto set
+# (``config_assets.CRYPTO_SET``). Classification and membership are separate.
+CRYPTO_UNIVERSE_SET = frozenset(CRYPTO_SYMBOLS)
+
+CRYPTO = UniverseSpec(
+    name="crypto",
+    asset_class=AssetClass.CRYPTO,
+    symbols=CRYPTO_SYMBOLS,
+    version=CRYPTO_VERSION,
+    hash=CRYPTO_HASH,
+    data_source="firstratedata",
+    adjustment="crypto_spot",
+    curve_mode="link_relatives",
+    annualization_days=365,
+    session_timezone="UTC",
+    cost_basis="relative_bps",
+    round_trip_bps=20.0,
+    stress_round_trip_bps=(30.0, 40.0),
+    units="quote_price",
+    profiles={"all": CRYPTO_SYMBOLS},
+    is_start="2018-01-01",
+    is_end="2023-12-31",
+    oos_years=("2024", "2025"),
+    oos_end=None,
+    fidelity_caveats=(
+        "FRD crypto spot, USD-quoted; bars are date-only 00:00 UTC",
+        "short/uneven histories: no FX session/DST convention applies",
+        "coverage starts later than 2018 for several symbols; the IS window "
+        "may have fewer than the 8-year sample floor",
+    ),
+)
+
 UNIVERSES: Dict[str, UniverseSpec] = {
     FUTURES_FULL.name: FUTURES_FULL,
     FUTURES_CROSS_SECTOR.name: FUTURES_CROSS_SECTOR,
+    CRYPTO.name: CRYPTO,
 }
 
 
@@ -198,6 +246,19 @@ def futures_universe_for_profile(profile: str) -> UniverseSpec:
     raise ValueError(
         f"Unknown futures profile {profile!r}; expected 'all' or 'cross_sector'"
     )
+
+
+def crypto_universe_for_profile(profile: str) -> UniverseSpec:
+    """Resolve a crypto insight profile to its frozen universe."""
+    p = str(profile or "all").strip().lower()
+    if p in {"all", "crypto"}:
+        return CRYPTO
+    raise ValueError(f"Unknown crypto profile {profile!r}; expected 'all'")
+
+
+def is_crypto_universe_member(symbol: str) -> bool:
+    """True only for the frozen 25, not every provider crypto ticker."""
+    return _normalize_symbol(symbol) in CRYPTO_UNIVERSE_SET
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -235,8 +296,8 @@ def default_cost_model_for_symbol(
     """Asset-aware default execution cost.
 
     Futures use the frozen relative-bps basis. Forex keeps the tick-derived pip
-    model. Crypto has no frozen cost basis yet (``H-006``); it requires an
-    explicit ``round_trip_bps`` rather than inventing one here.
+    model. Crypto uses the frozen 20 bps relative cost basis (``H-006``); an
+    explicit ``round_trip_bps`` still overrides it for stress runs.
     """
     from .costs import CostModel
 
@@ -249,12 +310,8 @@ def default_cost_model_for_symbol(
 
         return default_cost_model(symbol, round_trip_bps=round_trip_bps)
     if asset_class == AssetClass.CRYPTO:
-        if round_trip_bps is None:
-            raise ValueError(
-                "Crypto seasonality has no frozen cost basis yet (H-006); "
-                "pass an explicit round_trip_bps."
-            )
-        return CostModel(round_trip_bps=float(round_trip_bps))
+        bps = CRYPTO.round_trip_bps if round_trip_bps is None else round_trip_bps
+        return CostModel(round_trip_bps=float(bps))
     raise ValueError(f"Unsupported asset class for cost model: {asset_class.value}")
 
 
@@ -270,10 +327,17 @@ __all__ = [
     "FUTURES_FULL_SET",
     "FUTURES_CROSS_SECTOR_SET",
     "FUTURES_CLASS_SET",
+    "CRYPTO",
+    "CRYPTO_SYMBOLS",
+    "CRYPTO_VERSION",
+    "CRYPTO_HASH",
+    "CRYPTO_UNIVERSE_SET",
     "UNIVERSES",
     "asset_class_for_symbol",
+    "crypto_universe_for_profile",
     "default_cost_model_for_symbol",
     "futures_universe_for_profile",
     "get_universe",
+    "is_crypto_universe_member",
     "universe_hash",
 ]
