@@ -44,6 +44,13 @@ from .analysis import (
 from .costs import CostModel, trade_cost_frac
 from .data_sources import normalize_data_source
 from .significance import hansen_spa, whites_reality_check
+from .config_assets import AssetClass
+from .universes import (
+    FUTURES_CROSS_SECTOR,
+    FUTURES_FULL,
+    UniverseSpec,
+    asset_class_for_symbol,
+)
 
 FOREX_UNIVERSE_28: Tuple[str, ...] = (
     "EURUSD",
@@ -91,6 +98,21 @@ FOREX_PROFILES: Dict[str, Tuple[str, ...]] = {
     }),
 }
 FOREX_PROFILES["all"] = FOREX_UNIVERSE_28
+
+# Frozen futures universes (``SEAS-004``). Profiles are pinned to the frozen
+# membership; they are never re-derived at runtime.
+FUTURES_UNIVERSE_73: Tuple[str, ...] = FUTURES_FULL.symbols
+FUTURES_UNIVERSE_24: Tuple[str, ...] = FUTURES_CROSS_SECTOR.symbols
+FUTURES_PROFILES: Dict[str, Tuple[str, ...]] = {
+    "all": FUTURES_UNIVERSE_73,
+    "cross_sector": FUTURES_UNIVERSE_24,
+}
+
+PROTOCOL_SPLITS = {
+    "is": {"start": FUTURES_FULL.is_start, "end": FUTURES_FULL.is_end},
+    "oos_2024": {"start": "2024-01-01", "end": "2024-12-31"},
+    "oos_2025": {"start": "2025-01-01", "end": FUTURES_FULL.oos_end},
+}
 
 # Windows already used by the journal / shared-patterns doc. Reproducing these
 # from the artifact is an explicit acceptance criterion.
@@ -489,6 +511,63 @@ def _calibration_label(predicted: Optional[float], oos: Optional[float]) -> Dict
     }
 
 
+def _futures_universe_for_config(
+    universe: Optional[str], profile: Optional[str] = None
+) -> Optional[UniverseSpec]:
+    """Resolve a futures universe token, or ``None`` for non-futures symbols."""
+    key = str(universe or profile or "").strip().lower()
+    if not key:
+        return None
+    if key in {"futures", "futures_full"}:
+        return FUTURES_FULL
+    if key in {"futures_cross_sector", "cross_sector"}:
+        return FUTURES_CROSS_SECTOR
+    return None
+
+
+def _point_value(symbol: str) -> Tuple[Optional[float], str]:
+    """Contract point value in points, or (None, reason) when not known.
+
+    A missing contract spec is recorded as ``NO DATA``; it is never guessed.
+    """
+    try:
+        from trading_utils.contract_specs import get_futures_point_value
+
+        return float(get_futures_point_value(symbol)), "ok"
+    except Exception as exc:
+        return None, f"NO DATA: {exc}"
+
+
+def _protocol_split(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """IS 2010-2023 / OOS 2024 / OOS 2025 protocol metrics for one window."""
+
+    def _subset(start_year: int, end_year: int) -> Dict[str, Any]:
+        subset = [
+            r
+            for r in rows
+            if start_year <= int(r.get("year", 0)) <= end_year
+        ]
+        gross = [float(r["gross_return"]) for r in subset]
+        net = [float(r["net_return"]) for r in subset]
+        return {
+            "years": [int(r["year"]) for r in subset],
+            "gross": _metrics(gross),
+            "net": _metrics(net),
+        }
+
+    return {
+        "protocol": {
+            "is": dict(PROTOCOL_SPLITS["is"]),
+            "oos_2024": dict(PROTOCOL_SPLITS["oos_2024"]),
+            "oos_2025": dict(PROTOCOL_SPLITS["oos_2025"]),
+            "oos_2025_partial": True,
+        },
+        "is": _subset(2010, 2023),
+        "oos_2024": _subset(2024, 2024),
+        "oos_2025": _subset(2025, 2025),
+    }
+
+
 @dataclass
 class AccuracyConfig:
     curve_mode: str = CURVE_MODE_LINK_RELATIVES
@@ -497,6 +576,8 @@ class AccuracyConfig:
     include_context: bool = False
     spa_n_boot: int = 500
     seed: Optional[int] = 7
+    universe: Optional[str] = None
+    asset_class: Optional[str] = None
 
 
 def evaluate_symbol_accuracy(
@@ -510,7 +591,15 @@ def evaluate_symbol_accuracy(
     """Build the per-symbol accuracy artifact payload."""
     cfg = config or AccuracyConfig()
     symbol_u = str(symbol).strip().upper()
-    requested_source = normalize_data_source(cfg.data_source)
+    asset_class = str(
+        cfg.asset_class or asset_class_for_symbol(symbol_u).value
+    ).strip().lower()
+    is_futures = asset_class == AssetClass.FUTURES.value
+    universe_spec = (
+        _futures_universe_for_config(cfg.universe) if is_futures else None
+    )
+    default_source = "firstratedata" if is_futures else "dukascopy"
+    requested_source = normalize_data_source(cfg.data_source, default=default_source)
     as_of = as_of_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     years = _available_years(df)
@@ -614,6 +703,7 @@ def evaluate_symbol_accuracy(
                 "win_rate": oos_metric.get("win_rate"),
                 "degradation": degradation,
             },
+            "protocol_split": _protocol_split(rows) if is_futures else None,
             "robustness": {
                 "jitter": _jitter(df, symbol_u, entry_mmdd, exit_mmdd, direction),
                 "subperiod_consistency": _subperiod(rows),
@@ -649,20 +739,57 @@ def evaluate_symbol_accuracy(
         provenance = {}
     actual_source = str(provenance.get("data_source") or requested_source)
 
+    universe_name = universe_spec.name if universe_spec is not None else "forex"
+    point_value, point_value_status = (
+        _point_value(symbol_u) if is_futures else (None, "n/a")
+    )
+    protocol = None
+    if is_futures:
+        protocol = {
+            "is": dict(PROTOCOL_SPLITS["is"]),
+            "oos_2024": dict(PROTOCOL_SPLITS["oos_2024"]),
+            "oos_2025": dict(PROTOCOL_SPLITS["oos_2025"]),
+            "oos_2025_partial": True,
+            "annualization_days": FUTURES_FULL.annualization_days,
+            "session_timezone": FUTURES_FULL.session_timezone,
+        }
+
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "seasonality_accuracy",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "as_of_date": as_of,
         "symbol": symbol_u,
-        "universe": "forex",
+        "asset_class": asset_class,
+        "universe": universe_name,
+        "universe_version": universe_spec.version if universe_spec is not None else None,
+        "universe_hash": universe_spec.hash if universe_spec is not None else None,
+        "universe_size": len(universe_spec.symbols) if universe_spec is not None else None,
         "data_source": actual_source,
         "requested_data_source": requested_source,
         "fallback_reason": provenance.get("fallback_reason"),
         "data_provenance": provenance,
+        "adjustment": provenance.get("adjustment") if is_futures else None,
         "curve_mode": cfg.curve_mode,
         "costs_included": cfg.cost_model is not None,
         "cost_model": cfg.cost_model.to_dict() if cfg.cost_model is not None else None,
+        "cost_basis": (
+            "relative_bps"
+            if cfg.cost_model is not None and cfg.cost_model.round_trip_bps is not None
+            else ("pips" if cfg.cost_model is not None else None)
+        ),
+        "round_trip_bps": (
+            cfg.cost_model.round_trip_bps if cfg.cost_model is not None else None
+        ),
+        "units": FUTURES_FULL.units if is_futures else "fractional_return",
+        "point_value": point_value,
+        "point_value_status": point_value_status,
+        "annualization_days": FUTURES_FULL.annualization_days if is_futures else None,
+        "session_timezone": FUTURES_FULL.session_timezone if is_futures else None,
+        "protocol_split": protocol,
+        "fidelity_caveats": (
+            list(FUTURES_FULL.fidelity_caveats) if is_futures else None
+        ),
         "candidate_set": {
             "selection": "discovery leaders + pinned journal windows",
             "full_grid_size": int(len(family)),

@@ -46,6 +46,19 @@ from .data_sources import (
     dukascopy_m5_cache_dir,
     resolve_decision_source,
 )
+from .universes import (
+    FUTURES_CROSS_SECTOR,
+    FUTURES_CROSS_SECTOR_HASH,
+    FUTURES_FULL,
+    FUTURES_FULL_HASH,
+    FUTURES_FULL_ROOTS,
+    UNIVERSES,
+    UniverseSpec,
+    asset_class_for_symbol,
+    default_cost_model_for_symbol,
+    futures_universe_for_profile,
+    get_universe,
+)
 from .accuracy import (
     AccuracyConfig,
     FOREX_PROFILES,
@@ -119,4 +132,15 @@ __all__ = [
     "evaluate_symbol_accuracy",
     "full_candidate_family",
     "build_context_payload",
+    "UniverseSpec",
+    "FUTURES_FULL",
+    "FUTURES_CROSS_SECTOR",
+    "FUTURES_FULL_ROOTS",
+    "FUTURES_FULL_HASH",
+    "FUTURES_CROSS_SECTOR_HASH",
+    "UNIVERSES",
+    "asset_class_for_symbol",
+    "default_cost_model_for_symbol",
+    "futures_universe_for_profile",
+    "get_universe",
 ]
