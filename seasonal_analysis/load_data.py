@@ -10,10 +10,13 @@ sys.path.append("../jupyter-notebooks")
 # Local data loaders
 from trading_utils.get_forex_data import get_forex_data_by_pair
 from trading_utils.get_futures_data import get_futures_data_by_ticker
+from trading_utils.get_crypto_data import get_crypto_data_by_ticker
 
 # Minimal asset helpers
 from seasonal_analysis.config_assets import get_config, AssetClass
 from seasonal_analysis.universes import (
+    CRYPTO,
+    CRYPTO_UNIVERSE_SET,
     FUTURES_CLASS_SET,
     FUTURES_CROSS_SECTOR,
     FUTURES_CROSS_SECTOR_SET,
@@ -273,6 +276,17 @@ def load_price_data(
                 end_date=end_date,
                 granularity=granularity,
             )
+    elif asset_class == AssetClass.CRYPTO:
+        # FRD crypto spot is the only crypto source; daily bars are date-only
+        # 00:00 UTC, so no FX session/DST convention is applied here.
+        canonical_source = "firstratedata"
+        df = get_crypto_data_by_ticker(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            granularity=granularity,
+            source=canonical_source,
+        )
     else:
         raise ValueError(
             f"Unsupported or unknown asset class '{cfg.asset_class}' for symbol {symbol}."
@@ -321,6 +335,37 @@ def load_price_data(
             provenance.setdefault("universe", spec.name)
             provenance.setdefault("universe_version", spec.version)
             provenance.setdefault("universe_hash", spec.hash)
+    elif asset_class == AssetClass.CRYPTO:
+        # FRD crypto spot provenance. Bars are date-only UTC and returns are
+        # fractional; the frozen 20 bps relative cost basis is the decision
+        # basis. Universe membership is the frozen 25, not the provider set.
+        provenance.setdefault("data_source", "firstratedata")
+        provenance.setdefault("corpus", "firstratedata_crypto_spot")
+        provenance.setdefault("adjustment", CRYPTO.adjustment)
+        provenance.setdefault("representation", "crypto_spot")
+        provenance.setdefault("quality", "provider_crypto_spot")
+        provenance.setdefault("time_base", "UTC_date_only")
+        provenance.setdefault("units", CRYPTO.units)
+        provenance.setdefault("annualization_days", CRYPTO.annualization_days)
+        provenance.setdefault("session_timezone", CRYPTO.session_timezone)
+        provenance.setdefault("cost_basis", CRYPTO.cost_basis)
+        provenance.setdefault("round_trip_bps", CRYPTO.round_trip_bps)
+        provenance.setdefault("fidelity_caveats", list(CRYPTO.fidelity_caveats))
+        if str(symbol).strip().upper() in CRYPTO_UNIVERSE_SET:
+            provenance.setdefault("universe", CRYPTO.name)
+            provenance.setdefault("universe_version", CRYPTO.version)
+            provenance.setdefault("universe_hash", CRYPTO.hash)
+        else:
+            provenance.setdefault("universe_membership", "outside_frozen_universe")
+        # Coverage/staleness caveat: several frozen symbols end well before the
+        # artifact date, so OOS metrics may legitimately be absent.
+        try:
+            if len(df.index):
+                provenance.setdefault(
+                    "coverage_end", str(df.index.max().date())
+                )
+        except Exception:
+            pass
     provenance.setdefault("data_source", canonical_source)
     provenance.setdefault("requested_data_source", str(requested_source or ""))
     provenance.setdefault("canonical_data_source", canonical_source)

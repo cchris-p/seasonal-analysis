@@ -46,10 +46,13 @@ from .data_sources import normalize_data_source
 from .significance import hansen_spa, whites_reality_check
 from .config_assets import AssetClass
 from .universes import (
+    CRYPTO,
+    CRYPTO_SYMBOLS,
     FUTURES_CROSS_SECTOR,
     FUTURES_FULL,
     UniverseSpec,
     asset_class_for_symbol,
+    crypto_universe_for_profile,
 )
 
 FOREX_UNIVERSE_28: Tuple[str, ...] = (
@@ -108,10 +111,23 @@ FUTURES_PROFILES: Dict[str, Tuple[str, ...]] = {
     "cross_sector": FUTURES_UNIVERSE_24,
 }
 
+# Frozen crypto universe (``H-006`` / ``SEAS-005``). The crypto IS protocol
+# starts in 2018 (coverage varies by symbol), unlike the futures IS start.
+CRYPTO_UNIVERSE_25: Tuple[str, ...] = CRYPTO_SYMBOLS
+CRYPTO_PROFILES: Dict[str, Tuple[str, ...]] = {"all": CRYPTO_UNIVERSE_25}
+
 PROTOCOL_SPLITS = {
     "is": {"start": FUTURES_FULL.is_start, "end": FUTURES_FULL.is_end},
     "oos_2024": {"start": "2024-01-01", "end": "2024-12-31"},
     "oos_2025": {"start": "2025-01-01", "end": FUTURES_FULL.oos_end},
+}
+
+# Crypto IS starts in 2018 and ends in 2023; OOS 2025 is not partial by
+# construction (individual symbols may still have short coverage).
+CRYPTO_PROTOCOL_SPLITS = {
+    "is": {"start": CRYPTO.is_start, "end": CRYPTO.is_end},
+    "oos_2024": {"start": "2024-01-01", "end": "2024-12-31"},
+    "oos_2025": {"start": "2025-01-01", "end": "2025-12-31"},
 }
 
 # Windows already used by the journal / shared-patterns doc. Reproducing these
@@ -511,11 +527,18 @@ def _calibration_label(predicted: Optional[float], oos: Optional[float]) -> Dict
     }
 
 
-def _futures_universe_for_config(
-    universe: Optional[str], profile: Optional[str] = None
+def _universe_for_config(
+    universe: Optional[str],
+    asset_class: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Optional[UniverseSpec]:
-    """Resolve a futures universe token, or ``None`` for non-futures symbols."""
+    """Resolve a frozen universe token for a non-forex asset class."""
     key = str(universe or profile or "").strip().lower()
+    ac = str(asset_class or "").strip().lower()
+    if ac == AssetClass.CRYPTO.value or key in {"crypto", "crypto_full"}:
+        if not key or key in {"crypto", "crypto_full", "all"}:
+            return crypto_universe_for_profile(profile or "all")
+        raise ValueError(f"Unknown crypto universe {universe!r}")
     if not key:
         return None
     if key in {"futures", "futures_full"}:
@@ -523,6 +546,13 @@ def _futures_universe_for_config(
     if key in {"futures_cross_sector", "cross_sector"}:
         return FUTURES_CROSS_SECTOR
     return None
+
+
+def _futures_universe_for_config(
+    universe: Optional[str], profile: Optional[str] = None
+) -> Optional[UniverseSpec]:
+    """Backward-compatible futures-only resolver."""
+    return _universe_for_config(universe, "futures", profile)
 
 
 def _point_value(symbol: str) -> Tuple[Optional[float], str]:
@@ -538,8 +568,10 @@ def _point_value(symbol: str) -> Tuple[Optional[float], str]:
         return None, f"NO DATA: {exc}"
 
 
-def _protocol_split(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """IS 2010-2023 / OOS 2024 / OOS 2025 protocol metrics for one window."""
+def _protocol_split(
+    rows: Sequence[Dict[str, Any]], *, is_start: int = 2010, oos_2025_partial: bool = True
+) -> Dict[str, Any]:
+    """IS / OOS 2024 / OOS 2025 protocol metrics for one window."""
 
     def _subset(start_year: int, end_year: int) -> Dict[str, Any]:
         subset = [
@@ -555,14 +587,15 @@ def _protocol_split(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "net": _metrics(net),
         }
 
+    splits = CRYPTO_PROTOCOL_SPLITS if is_start >= 2018 else PROTOCOL_SPLITS
     return {
         "protocol": {
-            "is": dict(PROTOCOL_SPLITS["is"]),
-            "oos_2024": dict(PROTOCOL_SPLITS["oos_2024"]),
-            "oos_2025": dict(PROTOCOL_SPLITS["oos_2025"]),
-            "oos_2025_partial": True,
+            "is": dict(splits["is"]),
+            "oos_2024": dict(splits["oos_2024"]),
+            "oos_2025": dict(splits["oos_2025"]),
+            "oos_2025_partial": bool(oos_2025_partial),
         },
-        "is": _subset(2010, 2023),
+        "is": _subset(is_start, 2023),
         "oos_2024": _subset(2024, 2024),
         "oos_2025": _subset(2025, 2025),
     }
@@ -578,6 +611,7 @@ class AccuracyConfig:
     seed: Optional[int] = 7
     universe: Optional[str] = None
     asset_class: Optional[str] = None
+    profile: Optional[str] = None
 
 
 def evaluate_symbol_accuracy(
@@ -595,10 +629,14 @@ def evaluate_symbol_accuracy(
         cfg.asset_class or asset_class_for_symbol(symbol_u).value
     ).strip().lower()
     is_futures = asset_class == AssetClass.FUTURES.value
+    is_crypto = asset_class == AssetClass.CRYPTO.value
+    is_non_forex = is_futures or is_crypto
     universe_spec = (
-        _futures_universe_for_config(cfg.universe) if is_futures else None
+        _universe_for_config(cfg.universe, asset_class, cfg.profile)
+        if is_non_forex
+        else None
     )
-    default_source = "firstratedata" if is_futures else "dukascopy"
+    default_source = "firstratedata" if is_non_forex else "dukascopy"
     requested_source = normalize_data_source(cfg.data_source, default=default_source)
     as_of = as_of_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -703,7 +741,15 @@ def evaluate_symbol_accuracy(
                 "win_rate": oos_metric.get("win_rate"),
                 "degradation": degradation,
             },
-            "protocol_split": _protocol_split(rows) if is_futures else None,
+            "protocol_split": (
+                _protocol_split(
+                    rows,
+                    is_start=2018 if is_crypto else 2010,
+                    oos_2025_partial=not is_crypto,
+                )
+                if is_non_forex
+                else None
+            ),
             "robustness": {
                 "jitter": _jitter(df, symbol_u, entry_mmdd, exit_mmdd, direction),
                 "subperiod_consistency": _subperiod(rows),
@@ -743,15 +789,21 @@ def evaluate_symbol_accuracy(
     point_value, point_value_status = (
         _point_value(symbol_u) if is_futures else (None, "n/a")
     )
+    spec_units = universe_spec.units if universe_spec is not None else "fractional_return"
+    spec_annualization = (
+        universe_spec.annualization_days if universe_spec is not None else None
+    )
+    spec_session = universe_spec.session_timezone if universe_spec is not None else None
+    protocol_splits = CRYPTO_PROTOCOL_SPLITS if is_crypto else PROTOCOL_SPLITS
     protocol = None
-    if is_futures:
+    if is_non_forex:
         protocol = {
-            "is": dict(PROTOCOL_SPLITS["is"]),
-            "oos_2024": dict(PROTOCOL_SPLITS["oos_2024"]),
-            "oos_2025": dict(PROTOCOL_SPLITS["oos_2025"]),
-            "oos_2025_partial": True,
-            "annualization_days": FUTURES_FULL.annualization_days,
-            "session_timezone": FUTURES_FULL.session_timezone,
+            "is": dict(protocol_splits["is"]),
+            "oos_2024": dict(protocol_splits["oos_2024"]),
+            "oos_2025": dict(protocol_splits["oos_2025"]),
+            "oos_2025_partial": not is_crypto,
+            "annualization_days": spec_annualization,
+            "session_timezone": spec_session,
         }
 
     return {
@@ -769,7 +821,13 @@ def evaluate_symbol_accuracy(
         "requested_data_source": requested_source,
         "fallback_reason": provenance.get("fallback_reason"),
         "data_provenance": provenance,
-        "adjustment": provenance.get("adjustment") if is_futures else None,
+        "adjustment": (
+            provenance.get("adjustment") or (
+                universe_spec.adjustment if universe_spec is not None else None
+            )
+        )
+        if is_non_forex
+        else None,
         "curve_mode": cfg.curve_mode,
         "costs_included": cfg.cost_model is not None,
         "cost_model": cfg.cost_model.to_dict() if cfg.cost_model is not None else None,
@@ -781,14 +839,14 @@ def evaluate_symbol_accuracy(
         "round_trip_bps": (
             cfg.cost_model.round_trip_bps if cfg.cost_model is not None else None
         ),
-        "units": FUTURES_FULL.units if is_futures else "fractional_return",
+        "units": spec_units,
         "point_value": point_value,
         "point_value_status": point_value_status,
-        "annualization_days": FUTURES_FULL.annualization_days if is_futures else None,
-        "session_timezone": FUTURES_FULL.session_timezone if is_futures else None,
+        "annualization_days": spec_annualization,
+        "session_timezone": spec_session,
         "protocol_split": protocol,
         "fidelity_caveats": (
-            list(FUTURES_FULL.fidelity_caveats) if is_futures else None
+            list(universe_spec.fidelity_caveats) if universe_spec is not None else None
         ),
         "candidate_set": {
             "selection": "discovery leaders + pinned journal windows",
