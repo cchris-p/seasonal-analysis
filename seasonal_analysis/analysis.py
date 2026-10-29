@@ -10,11 +10,9 @@ from .costs import CostModel, trade_cost_frac
 
 
 # ---------- Curve modes ----------
-CURVE_MODE_LOG_RETURN_COMPOUNDED = "log_return_compounded"
 CURVE_MODE_LINK_RELATIVES = "link_relatives"
 CURVE_MODE_YEARLY_AVERAGE = "yearly_average"
 CURVE_MODES = (
-    CURVE_MODE_LOG_RETURN_COMPOUNDED,
     CURVE_MODE_LINK_RELATIVES,
     CURVE_MODE_YEARLY_AVERAGE,
 )
@@ -56,7 +54,7 @@ class SeasonalAnalysisResult:
     num_years: int
     curve_years_used: List[int] = field(default_factory=list)
     curve_years_excluded: List[int] = field(default_factory=list)
-    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED
+    curve_mode: str = CURVE_MODE_LINK_RELATIVES
     costs_included: bool = False
     data_source: str = ""
     data_provenance: Optional[Dict[str, Any]] = None
@@ -302,7 +300,7 @@ def build_seasonal_pattern_curve(
     price_col: str = "close",
     smooth: int = 0,
     exclude_incomplete_last_year: bool = True,
-    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    curve_mode: str = CURVE_MODE_LINK_RELATIVES,
 ) -> pd.DataFrame:
     """
     Build a daily seasonal index curve by averaging calendar-slot returns/factors across
@@ -316,9 +314,7 @@ def build_seasonal_pattern_curve(
         exclude_incomplete_last_year: If True, exclude the last year if it appears
             incomplete.
         curve_mode: One of
-            - ``log_return_compounded`` (default/legacy): compound the per-slot mean daily
-              log return; **drift-inclusive** (the curve trends with the average return).
-            - ``link_relatives``: the TSM Ch.10 link-relative method, drift-neutralized by
+            - ``link_relatives`` (default): the TSM Ch.10 link-relative method, drift-neutralized by
               removing the mean per-slot log return before compounding, so the seasonal
               curve carries no secular drift.
             - ``yearly_average``: the TSM Ch.10 moving-average / yearly-average detrending,
@@ -337,7 +333,7 @@ def build_seasonal_pattern_curve(
     if len(years) == 0:
         raise ValueError("No data.")
 
-    mode = str(curve_mode or CURVE_MODE_LOG_RETURN_COMPOUNDED).strip().lower()
+    mode = str(curve_mode or CURVE_MODE_LINK_RELATIVES).strip().lower()
     if mode not in CURVE_MODES:
         raise ValueError(
             f"Unsupported curve_mode: {curve_mode!r}; expected one of {CURVE_MODES}"
@@ -430,12 +426,10 @@ def build_seasonal_pattern_curve(
     if mode == CURVE_MODE_LINK_RELATIVES:
         m = grp["mean_log_return"].astype(float)
         per_slot = (m - m.mean()).to_numpy()
-    elif mode == CURVE_MODE_YEARLY_AVERAGE:
+    else:  # CURVE_MODE_YEARLY_AVERAGE
         per_slot = _yearly_average_log_factors(
             df, price_col, mmdd_all, curve_years_used
         )
-    else:  # CURVE_MODE_LOG_RETURN_COMPOUNDED
-        per_slot = grp["mean_log_return"].astype(float).to_numpy()
 
     grp["mean_log_return"] = per_slot
 
@@ -620,7 +614,7 @@ def score_seasonal_windows(
     direction: str = "auto",
     min_trades: int = 10,
     min_win_rate: float = 0.80,
-    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    curve_mode: str = CURVE_MODE_LINK_RELATIVES,
     cost_model: Optional[CostModel] = None,
     spread_series: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[WindowStats], pd.DataFrame]:
@@ -885,7 +879,7 @@ def build_window_return_matrix(
     symbol: str,
     windows: List[Tuple[str, str]],
     direction: str = "auto",
-    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    curve_mode: str = CURVE_MODE_LINK_RELATIVES,
     value_col: str = "profit_pct",
 ) -> Tuple[np.ndarray, List[int], List[str]]:
     """Build a ``(n_years, n_windows)`` matrix of per-year returns for a window set.
@@ -970,7 +964,7 @@ def run_seasonal_analysis(
     min_win_rate: float = 0.80,
     smooth: int = 3,
     exclude_incomplete_last_year: bool = True,
-    curve_mode: str = CURVE_MODE_LOG_RETURN_COMPOUNDED,
+    curve_mode: str = CURVE_MODE_LINK_RELATIVES,
     cost_model: Optional[CostModel] = None,
     spread_series: Optional[Dict[str, Any]] = None,
     source: str = "firstratedata",
@@ -996,9 +990,9 @@ def run_seasonal_analysis(
         min_win_rate: Minimum win rate (0-1) to qualify a window (default: 0.80).
         smooth: Moving average window for seasonal curve smoothing (default: 3).
         exclude_incomplete_last_year: If True, exclude incomplete final year (default: True).
-        curve_mode: Seasonal curve construction mode (default: ``log_return_compounded``).
-            Use ``link_relatives`` or ``yearly_average`` for drift-free seasonal curves
-            (see ``build_seasonal_pattern_curve``).
+        curve_mode: Seasonal curve construction mode (default: ``link_relatives``;
+            ``yearly_average`` is the alternate drift-free mode; see
+            ``build_seasonal_pattern_curve``).
         cost_model: Optional :class:`~seasonal_analysis.costs.CostModel`. When supplied,
             per-trade net-of-cost metrics are computed and window selection uses them.
         spread_series: Optional calibrated per-bar spread series (``epoch_seconds`` /
@@ -1094,7 +1088,7 @@ def run_seasonal_analysis(
         num_years=num_years,
         curve_years_used=curve_years_used,
         curve_years_excluded=curve_years_excluded,
-        curve_mode=str(curve_mode or CURVE_MODE_LOG_RETURN_COMPOUNDED).strip().lower(),
+        curve_mode=str(curve_mode or CURVE_MODE_LINK_RELATIVES).strip().lower(),
         costs_included=cost_model is not None,
         data_source=data_source,
         data_provenance=data_provenance,
