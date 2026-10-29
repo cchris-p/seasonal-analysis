@@ -3,7 +3,6 @@ from __future__ import annotations
 from .analysis import (
     WindowStats,
     SeasonalAnalysisResult,
-    CURVE_MODE_LOG_RETURN_COMPOUNDED,
     CURVE_MODE_LINK_RELATIVES,
     CURVE_MODE_YEARLY_AVERAGE,
     CURVE_MODES,
@@ -18,6 +17,8 @@ from .analysis import (
     compute_pattern_vs_rest_vs_buy_and_hold,
     build_window_return_matrix,
 )
+from .metrics import trade_metrics
+from .calendar_utils import shift_mmdd_trading_days
 from .plotting import (
     plot_seasonal_curve_with_windows,
     plot_per_year_pnl,
@@ -37,7 +38,6 @@ from .data_sources import (
     DECISION_CURVE_MODE,
     DUKASCOPY,
     FIRSTRATEDATA,
-    LEGACY_CURVE_MODE,
     UnsupportedDataSource,
     normalize_data_source,
     normalize_requested_source,
@@ -55,6 +55,9 @@ from .universes import (
     UNIVERSES,
     UniverseSpec,
     asset_class_for_symbol,
+    is_forex_symbol,
+    is_futures_symbol,
+    is_crypto_symbol,
     default_cost_model_for_symbol,
     futures_universe_for_profile,
     get_universe,
@@ -70,8 +73,12 @@ from .accuracy import (
 )
 from .context import build_context_payload
 from .significance import (
+    adjust_pvalues_benjamini_hochberg,
+    adjust_pvalues_bonferroni,
+    bootstrap_ci,
     hansen_spa,
     jitter_return_distribution,
+    sign_permutation_p_value,
     stationary_bootstrap_indices,
     subperiod_consistency,
     whites_reality_check,
@@ -80,7 +87,6 @@ from .significance import (
 __all__ = [
     "WindowStats",
     "SeasonalAnalysisResult",
-    "CURVE_MODE_LOG_RETURN_COMPOUNDED",
     "CURVE_MODE_LINK_RELATIVES",
     "CURVE_MODE_YEARLY_AVERAGE",
     "CURVE_MODES",
@@ -99,6 +105,12 @@ __all__ = [
     "plot_seasonal_stacks_by_lookback",
     "build_seasonal_filter",
     "compute_poi_charts_payload",
+    "trade_metrics",
+    "shift_mmdd_trading_days",
+    "bootstrap_ci",
+    "sign_permutation_p_value",
+    "adjust_pvalues_bonferroni",
+    "adjust_pvalues_benjamini_hochberg",
     "hansen_spa",
     "whites_reality_check",
     "stationary_bootstrap_indices",
@@ -116,7 +128,6 @@ __all__ = [
     "DECISION_CURVE_MODE",
     "DUKASCOPY",
     "FIRSTRATEDATA",
-    "LEGACY_CURVE_MODE",
     "UnsupportedDataSource",
     "normalize_data_source",
     "normalize_requested_source",
@@ -140,6 +151,9 @@ __all__ = [
     "FUTURES_CROSS_SECTOR_HASH",
     "UNIVERSES",
     "asset_class_for_symbol",
+    "is_forex_symbol",
+    "is_futures_symbol",
+    "is_crypto_symbol",
     "default_cost_model_for_symbol",
     "futures_universe_for_profile",
     "get_universe",

@@ -12,8 +12,8 @@ be recorded under a token the loader silently treats as another source.
 
 Decision-use default (``SEAS-003A``): forex analysis uses Dukascopy
 (``GMT+0_US-DST``) with the drift-free ``link_relatives`` curve and a
-cost-aware evaluation. ``firstratedata`` / ``log_return_compounded`` remain
-available as explicit legacy/diagnostic overrides.
+cost-aware evaluation. The retired ``log_return_compounded`` curve mode is not
+accepted.
 """
 
 from __future__ import annotations
@@ -99,7 +99,6 @@ def is_legacy_source(value: Optional[str]) -> bool:
 
 
 DECISION_CURVE_MODE = "link_relatives"
-LEGACY_CURVE_MODE = "log_return_compounded"
 
 
 def dukascopy_available() -> bool:

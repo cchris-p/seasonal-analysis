@@ -288,6 +288,21 @@ def asset_class_for_symbol(symbol: str) -> AssetClass:
     return AssetClass.STOCK
 
 
+def is_forex_symbol(symbol: str) -> bool:
+    """True when the shared registry classifies ``symbol`` as spot FX."""
+    return asset_class_for_symbol(symbol) == AssetClass.FOREX
+
+
+def is_futures_symbol(symbol: str) -> bool:
+    """True when the shared registry classifies ``symbol`` as a futures root."""
+    return asset_class_for_symbol(symbol) == AssetClass.FUTURES
+
+
+def is_crypto_symbol(symbol: str) -> bool:
+    """True when the shared registry classifies ``symbol`` as crypto."""
+    return asset_class_for_symbol(symbol) == AssetClass.CRYPTO
+
+
 def default_cost_model_for_symbol(
     symbol: str,
     *,
@@ -334,6 +349,9 @@ __all__ = [
     "CRYPTO_UNIVERSE_SET",
     "UNIVERSES",
     "asset_class_for_symbol",
+    "is_forex_symbol",
+    "is_futures_symbol",
+    "is_crypto_symbol",
     "crypto_universe_for_profile",
     "default_cost_model_for_symbol",
     "futures_universe_for_profile",

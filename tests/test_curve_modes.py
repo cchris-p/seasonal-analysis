@@ -5,7 +5,6 @@ import pandas as pd
 
 from seasonal_analysis.analysis import (
     CURVE_MODE_LINK_RELATIVES,
-    CURVE_MODE_LOG_RETURN_COMPOUNDED,
     CURVE_MODE_YEARLY_AVERAGE,
     build_seasonal_pattern_curve,
 )
@@ -34,14 +33,6 @@ def _curve(mode: str) -> pd.DataFrame:
     )
 
 
-def test_compounded_mode_is_drift_inclusive() -> None:
-    curve = _curve(CURVE_MODE_LOG_RETURN_COMPOUNDED)
-    vals = curve["seasonal_index"].to_numpy()
-    assert vals[0] == 100.0
-    # Drift-inclusive: the year-end level is materially above the start.
-    assert vals[-1] - vals[0] > 5.0
-
-
 def test_link_relatives_is_drift_free() -> None:
     curve = _curve(CURVE_MODE_LINK_RELATIVES)
     vals = curve["seasonal_index"].to_numpy()
@@ -68,5 +59,6 @@ def test_calendar_slots_drop_leap_day_and_are_ordered() -> None:
 def test_unsupported_mode_raises() -> None:
     import pytest
 
-    with pytest.raises(ValueError):
-        build_seasonal_pattern_curve(_synthetic_prices(), curve_mode="bogus")
+    for mode in ("bogus", "log_return_compounded"):
+        with pytest.raises(ValueError):
+            build_seasonal_pattern_curve(_synthetic_prices(), curve_mode=mode)

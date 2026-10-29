@@ -311,3 +311,97 @@ def jitter_return_distribution(
         "mean": float(np.mean(arr)),
         "fraction_positive": float(np.mean(arr > 0.0)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Shared validation primitives (TradeSurge worker + promotion evidence)
+# ---------------------------------------------------------------------------
+def bootstrap_ci(
+    values: Sequence[float], n: int = 1000, seed: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """Bootstrap the mean of ``values`` and return a 95% percentile interval."""
+    arr = np.asarray([float(v) for v in values if v is not None], dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+    n_i = int(n)
+    if n_i <= 0:
+        return None
+    rng = np.random.default_rng(None if seed is None else int(seed))
+    idx = rng.integers(0, arr.size, size=(n_i, arr.size))
+    means = arr[idx].mean(axis=1)
+    return {
+        "n": n_i,
+        "mean": float(arr.mean()),
+        "p2_5": float(np.quantile(means, 0.025)),
+        "p97_5": float(np.quantile(means, 0.975)),
+    }
+
+
+def sign_permutation_p_value(
+    values: Sequence[float], n: int = 2000, seed: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """Two-sided sign-flip permutation test on the mean of ``values``."""
+    arr = np.asarray([float(v) for v in values if v is not None], dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+    n_i = int(n)
+    if n_i <= 0:
+        return None
+    rng = np.random.default_rng(None if seed is None else int(seed))
+    observed = float(arr.mean())
+    signs = rng.choice(np.array([-1.0, 1.0]), size=(n_i, arr.size), replace=True)
+    perm_means = np.mean(signs * arr, axis=1)
+    more_extreme = int(np.sum(np.abs(perm_means) >= abs(observed)))
+    return {
+        "n": n_i,
+        "seed": None if seed is None else int(seed),
+        "alternative": "two_sided",
+        "observed_mean": observed,
+        "p_value": float((more_extreme + 1) / (n_i + 1)),
+    }
+
+
+def adjust_pvalues_bonferroni(
+    p_values: Sequence[Optional[float]],
+) -> List[Optional[float]]:
+    """Bonferroni-adjust a list of p-values (``None`` entries pass through)."""
+    valid = [p for p in p_values if isinstance(p, (int, float))]
+    m = int(len(valid))
+    return [
+        None if not isinstance(p, (int, float)) else float(min(1.0, float(p) * m))
+        for p in p_values
+    ]
+
+
+def adjust_pvalues_benjamini_hochberg(
+    p_values: Sequence[Optional[float]],
+) -> List[Optional[float]]:
+    """Benjamini–Hochberg q-values with a monotone step-up correction."""
+    indexed: List[Tuple[int, float]] = [
+        (int(idx), float(p))
+        for idx, p in enumerate(p_values)
+        if isinstance(p, (int, float))
+    ]
+    m = int(len(indexed))
+    if m == 0:
+        return [None for _ in p_values]
+
+    indexed_sorted = sorted(indexed, key=lambda t: t[1])
+    q_by_sorted = [
+        float(p) * m / float(rank)
+        for rank, (_idx, p) in enumerate(indexed_sorted, start=1)
+    ]
+
+    running = 1.0
+    q_mono: List[float] = []
+    for q in reversed(q_by_sorted):
+        running = float(min(running, q))
+        q_mono.append(running)
+    q_mono = list(reversed(q_mono))
+
+    out: List[Optional[float]] = [None for _ in p_values]
+    for (orig_idx, _p), q in zip(indexed_sorted, q_mono):
+        out[int(orig_idx)] = float(min(1.0, q))
+    return out

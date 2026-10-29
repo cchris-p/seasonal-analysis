@@ -41,8 +41,10 @@ from .analysis import (
     generate_calendar_grid,
     score_seasonal_windows,
 )
+from .calendar_utils import shift_mmdd_trading_days as _shift_mmdd_trading_days
 from .costs import CostModel, trade_cost_frac
 from .data_sources import normalize_data_source
+from .metrics import trade_metrics as _metrics
 from .significance import hansen_spa, whites_reality_check
 from .config_assets import AssetClass
 from .universes import (
@@ -176,55 +178,6 @@ def _safe_mean(values: Iterable[Any]) -> Optional[float]:
     if arr.size == 0:
         return None
     return float(arr.mean())
-
-
-def _metrics(returns: Sequence[float]) -> Dict[str, Any]:
-    arr = np.asarray([float(v) for v in returns if v is not None], dtype=float)
-    arr = arr[np.isfinite(arr)]
-    if arr.size == 0:
-        return {
-            "num_trades": 0,
-            "win_rate": None,
-            "avg_return": None,
-            "median_return": None,
-            "worst_year_return": None,
-            "max_drawdown_proxy": None,
-            "profit_factor": None,
-            "mae": None,
-        }
-    wins = arr > 0.0
-    gains = arr[wins].sum()
-    losses = -arr[~wins].sum()
-    profit_factor = float(gains / losses) if losses > 0 else None
-    cum = np.cumsum(arr)
-    dd = cum - np.maximum.accumulate(np.concatenate(([0.0], cum)))[1:] if cum.size else np.array([])
-    mean = float(arr.mean())
-    return {
-        "num_trades": int(arr.size),
-        "win_rate": float(wins.mean()),
-        "avg_return": mean,
-        "median_return": float(np.median(arr)),
-        "worst_year_return": float(arr.min()),
-        "max_drawdown_proxy": float(dd.min()) if dd.size else None,
-        "profit_factor": profit_factor,
-        "mae": float(np.mean(np.abs(arr - mean))),
-    }
-
-
-def _shift_mmdd_trading_days(mmdd: str, k: int) -> Optional[str]:
-    bd = pd.bdate_range("2024-01-01", "2024-12-31")
-    m, d = map(int, mmdd.split("-"))
-    target = pd.Timestamp(2024, m, d)
-    pos = int(bd.searchsorted(target))
-    if pos >= len(bd):
-        pos = len(bd) - 1
-    new = pos + int(k)
-    if new < 0 or new >= len(bd):
-        return None
-    nm = bd[new].strftime("%m-%d")
-    if nm == "02-29":
-        return None
-    return nm
 
 
 def _year_trade_rows(
